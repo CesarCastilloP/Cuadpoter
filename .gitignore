@@ -1,0 +1,10 @@
+# Code Composer Studio build outputs
+Debug/
+Release/
+
+# Local debugger and workspace state
+ti_appdata/
+*.launches_backup
+
+# Unrelated launch configuration copied from another project
+.launches/MCU_Maestro_LittleFinger.launch
