@@ -31,10 +31,7 @@ static bool schedule_is_due(uint64_t now_cycles,
 /**
  * @brief Radio receiver data shared with the interrupt-driven decoder.
  */
-RP4TDM_datas_t rp4tdm_data = {
-    .status_channels = RP4TDM_NO_INIT_DATA,
-    .status_statistics = RP4TDM_NO_STATISTICS
-};
+RP4TDM_Data_t rp4tdm_data = {0};
 
 /**
  * @brief Barometer calibration and latest compensated measurement.
@@ -95,7 +92,7 @@ int main(void)
     while(true)
     {
         /* Consume completed receiver buffers before a newer frame replaces them. */
-        RP4TDM_process();
+        RP4TDM_Process(&rp4tdm_data);
 
         now_cycles = Timebase_GetCycles();
         if(schedule_is_due(now_cycles, imu_period_cycles,
@@ -121,7 +118,7 @@ int main(void)
              * Frame parsing runs every pass above. Only link age advances at
              * 100 Hz, preserving the intended timeout duration.
              */
-            RP4TDM_timeout_tick();
+            RP4TDM_TimeoutTick(&rp4tdm_data);
         }
 
         now_cycles = Timebase_GetCycles();
@@ -205,8 +202,9 @@ static uint32_t config(void)
         }
     }
 
-    receiver_status = RP4TDM_init(420000U, RP4TDM_callback);
-    if(receiver_status != RP4TDM_OK)
+    receiver_status = RP4TDM_Init(&rp4tdm_data, 420000U, NULL);
+    if((receiver_status != RP4TDM_STATUS_OK) &&
+       (receiver_status != RP4TDM_STATUS_WAITING_FOR_DATA))
     {
         while(true)
         {
