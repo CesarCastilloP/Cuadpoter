@@ -13,6 +13,7 @@
 #include "systick.h"
 #include "rp4tdm.h"
 #include "bmp390l.h"
+#include "flight_control.h"
 #include "lsm6ds.h"
 #include "i2c0_drone.h"
 #include "uart.h"
@@ -38,6 +39,9 @@ RP4TDM_Data_t rp4tdm_data = {0};
  */
 BMP390L_Data_t barometer_data;
 
+/** Flight controller state and normalized outputs; no PWM is generated. */
+FlightControl_Data_t flight_control_data;
+
 /**
  * @brief IMU state and flight-ready outputs.
  *
@@ -57,6 +61,8 @@ volatile LSM6DS_Status_t g_imu_runtime_status =
     LSM6DS_STATUS_NOT_INITIALIZED;
 volatile BMP390L_Status_t g_barometer_runtime_status =
     BMP390L_STATUS_NOT_INITIALIZED;
+volatile FlightControl_Status_t g_flight_control_runtime_status =
+    FLIGHT_CONTROL_STATUS_NOT_INITIALIZED;
 volatile uint32_t g_imu_poll_missed_periods = 0U;
 volatile uint32_t g_receiver_missed_periods = 0U;
 volatile uint32_t g_barometer_missed_periods = 0U;
@@ -100,13 +106,11 @@ int main(void)
                            &g_imu_poll_missed_periods))
         {
             g_imu_runtime_status = LSM6DS_Update(&lsm6ds_data);
-
-            /*
-             * Insert the future flight controller here and run it only
-             * when status is OK and sample.fresh/sample.valid are both true.
-             * Its IMU inputs are sample.gyro_rad_s, sample.accel_mps2 and
-             * sample.dt_s.
-             */
+            g_flight_control_runtime_status = FlightControl_Update(
+                &flight_control_data,
+                g_imu_runtime_status,
+                &lsm6ds_data.sample,
+                &rp4tdm_data.controls);
         }
 
         now_cycles = Timebase_GetCycles();
@@ -179,6 +183,7 @@ static uint32_t config(void)
     uint32_t system_clock_hz;
     RP4TDM_Status_t receiver_status;
     BMP390L_Status_t barometer_status;
+    FlightControl_Status_t flight_control_status;
     LSM6DS_Status_t imu_status;
     I2C0_Status_t i2c_status;
 
@@ -230,6 +235,15 @@ static uint32_t config(void)
     imu_status = LSM6DS_Init(&lsm6ds_data, &g_imu_axis_map);
     g_imu_runtime_status = imu_status;
     if(imu_status != LSM6DS_STATUS_OK)
+    {
+        while(true)
+        {
+        }
+    }
+
+    flight_control_status = FlightControl_Init(&flight_control_data, NULL);
+    g_flight_control_runtime_status = flight_control_status;
+    if(flight_control_status != FLIGHT_CONTROL_STATUS_OK)
     {
         while(true)
         {
