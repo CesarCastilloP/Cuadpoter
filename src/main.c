@@ -16,6 +16,7 @@
 #include "flight_control.h"
 #include "lsm6ds.h"
 #include "i2c0_drone.h"
+#include "motor_output.h"
 #include "uart.h"
 
 /* The IMU is polled faster than its 416 Hz ODR to minimize ready-detection jitter. */
@@ -42,6 +43,9 @@ BMP390L_Data_t barometer_data;
 /** Flight controller state and normalized outputs; no PWM is generated. */
 FlightControl_Data_t flight_control_data;
 
+/** Pulse widths prepared for the future hardware PWM implementation. */
+MotorOutput_Data_t motor_output_data;
+
 /**
  * @brief IMU state and flight-ready outputs.
  *
@@ -63,6 +67,8 @@ volatile BMP390L_Status_t g_barometer_runtime_status =
     BMP390L_STATUS_NOT_INITIALIZED;
 volatile FlightControl_Status_t g_flight_control_runtime_status =
     FLIGHT_CONTROL_STATUS_NOT_INITIALIZED;
+volatile MotorOutput_Status_t g_motor_output_runtime_status =
+    MOTOR_OUTPUT_STATUS_NOT_INITIALIZED;
 volatile uint32_t g_imu_poll_missed_periods = 0U;
 volatile uint32_t g_receiver_missed_periods = 0U;
 volatile uint32_t g_barometer_missed_periods = 0U;
@@ -111,6 +117,9 @@ int main(void)
                 g_imu_runtime_status,
                 &lsm6ds_data.sample,
                 &rp4tdm_data.controls);
+            g_motor_output_runtime_status = MotorOutput_Update(
+                &motor_output_data,
+                &flight_control_data.output);
         }
 
         now_cycles = Timebase_GetCycles();
@@ -184,6 +193,7 @@ static uint32_t config(void)
     RP4TDM_Status_t receiver_status;
     BMP390L_Status_t barometer_status;
     FlightControl_Status_t flight_control_status;
+    MotorOutput_Status_t motor_output_status;
     LSM6DS_Status_t imu_status;
     I2C0_Status_t i2c_status;
 
@@ -244,6 +254,15 @@ static uint32_t config(void)
     flight_control_status = FlightControl_Init(&flight_control_data, NULL);
     g_flight_control_runtime_status = flight_control_status;
     if(flight_control_status != FLIGHT_CONTROL_STATUS_OK)
+    {
+        while(true)
+        {
+        }
+    }
+
+    motor_output_status = MotorOutput_Init(&motor_output_data, NULL);
+    g_motor_output_runtime_status = motor_output_status;
+    if(motor_output_status != MOTOR_OUTPUT_STATUS_SAFE)
     {
         while(true)
         {
