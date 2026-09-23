@@ -19,6 +19,9 @@
 #define MAX_ESTIMATED_PITCH_RAD        (80.0f * DEG_TO_RAD)
 #define TWO_PI                         (2.0f * M_PI)
 
+/* The installed IMU reports nose-up rotation as negative sensor Y. */
+#define AIRFRAME_PITCH_SENSOR_SIGN      (-1.0f)
+
 static const FlightControl_Config_t g_default_config = {
     20.0f,
     180.0f,
@@ -166,7 +169,8 @@ FlightControl_Status_t FlightControl_Update(
     }
 
     roll_rate_deg_s = imu->gyro_rad_s.x * RAD_TO_DEG;
-    pitch_rate_deg_s = imu->gyro_rad_s.y * RAD_TO_DEG;
+    pitch_rate_deg_s = AIRFRAME_PITCH_SENSOR_SIGN *
+                       imu->gyro_rad_s.y * RAD_TO_DEG;
     yaw_rate_deg_s = imu->gyro_rad_s.z * RAD_TO_DEG;
 
     (void)update_pid(&data->config.roll_rate,
@@ -325,6 +329,7 @@ static bool update_attitude(FlightControl_Data_t *data,
     float32_t predicted_roll;
     float32_t predicted_pitch;
     float32_t roll_rate;
+    float32_t body_pitch_rate;
     float32_t pitch_rate;
     float32_t correction;
     bool accel_trusted;
@@ -347,8 +352,9 @@ static bool update_attitude(FlightControl_Data_t *data,
     {
         accel_roll = atan2f(data->upright_accel_z_sign * ay,
                             data->upright_accel_z_sign * az);
-        accel_pitch = atan2f(-data->upright_accel_z_sign * ax,
-                             sqrtf((ay * ay) + (az * az)));
+        accel_pitch = AIRFRAME_PITCH_SENSOR_SIGN *
+            atan2f(-data->upright_accel_z_sign * ax,
+                   sqrtf((ay * ay) + (az * az)));
     }
     else
     {
@@ -369,13 +375,15 @@ static bool update_attitude(FlightControl_Data_t *data,
     }
     else
     {
+        body_pitch_rate = AIRFRAME_PITCH_SENSOR_SIGN *
+                          imu->gyro_rad_s.y;
         roll_rate = imu->gyro_rad_s.x +
             sinf(data->estimated_roll_rad) *
-            tanf(data->estimated_pitch_rad) * imu->gyro_rad_s.y +
+            tanf(data->estimated_pitch_rad) * body_pitch_rate +
             cosf(data->estimated_roll_rad) *
             tanf(data->estimated_pitch_rad) * imu->gyro_rad_s.z;
         pitch_rate =
-            cosf(data->estimated_roll_rad) * imu->gyro_rad_s.y -
+            cosf(data->estimated_roll_rad) * body_pitch_rate -
             sinf(data->estimated_roll_rad) * imu->gyro_rad_s.z;
         predicted_roll = wrap_angle(
             data->estimated_roll_rad + (roll_rate * imu->dt_s));

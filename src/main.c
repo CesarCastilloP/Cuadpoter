@@ -40,10 +40,10 @@ RP4TDM_Data_t rp4tdm_data = {0};
  */
 BMP390L_Data_t barometer_data;
 
-/** Flight controller state and normalized outputs; no PWM is generated. */
+/** Flight controller state and normalized motor commands. */
 FlightControl_Data_t flight_control_data;
 
-/** Pulse widths prepared for the future hardware PWM implementation. */
+/** Motor pulse conversion and synchronized PWM hardware state. */
 MotorOutput_Data_t motor_output_data;
 
 /**
@@ -260,7 +260,9 @@ static uint32_t config(void)
         }
     }
 
-    motor_output_status = MotorOutput_Init(&motor_output_data, NULL);
+    motor_output_status = MotorOutput_Init(&motor_output_data,
+                                           system_clock_hz,
+                                           NULL);
     g_motor_output_runtime_status = motor_output_status;
     if(motor_output_status != MOTOR_OUTPUT_STATUS_SAFE)
     {
