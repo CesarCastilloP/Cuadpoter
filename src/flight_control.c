@@ -2,8 +2,8 @@
  * @file flight_control.c
  * @author Alberto Vazquez
  * @brief Cascaded attitude/rate controller with normalized X-frame outputs.
- * @version 1.0.0
- * @date 2026-09-15
+ * @version 1.2.2
+ * @date 2026-09-23
  */
 
 #include <math.h>
@@ -19,19 +19,24 @@
 #define MAX_ESTIMATED_PITCH_RAD        (80.0f * DEG_TO_RAD)
 #define TWO_PI                         (2.0f * M_PI)
 
-/* The installed IMU reports nose-up rotation as negative sensor Y. */
-#define AIRFRAME_PITCH_SENSOR_SIGN      (-1.0f)
+/* A nose-up movement must be positive in both pitch feedback signals. */
+#define AIRFRAME_PITCH_ACCEL_SIGN       (-1.0f)
+#define AIRFRAME_PITCH_GYRO_SIGN        (-1.0f)
+
+/* Match transmitter stick directions to positive airframe rotations. */
+#define RECEIVER_ROLL_COMMAND_SIGN      (-1.0f)
+#define RECEIVER_PITCH_COMMAND_SIGN     (-1.0f)
 
 static const FlightControl_Config_t g_default_config = {
     20.0f,
     180.0f,
     150.0f,
-    4.0f,
+    5.0f,
     0.03f,
     0.05f,
     0.50f,
-    { 0.0025f, 0.0010f, 0.000015f, 0.10f, 0.25f, 30.0f },
-    { 0.0025f, 0.0010f, 0.000015f, 0.10f, 0.25f, 30.0f },
+    { 0.0035f, 0.0015f, 0.000018f, 0.12f, 0.35f, 30.0f },
+    { 0.0050f, 0.0030f, 0.000025f, 0.18f, 0.45f, 30.0f },
     { 0.0030f, 0.0005f, 0.000000f, 0.10f, 0.20f, 30.0f }
 };
 
@@ -130,10 +135,10 @@ FlightControl_Status_t FlightControl_Update(
             data, FLIGHT_CONTROL_STATUS_RECEIVER_UNAVAILABLE);
     }
 
-    roll_command = apply_deadband(receiver->roll,
-                                  data->config.stick_deadband);
-    pitch_command = apply_deadband(receiver->pitch,
-                                   data->config.stick_deadband);
+    roll_command = RECEIVER_ROLL_COMMAND_SIGN *
+        apply_deadband(receiver->roll, data->config.stick_deadband);
+    pitch_command = RECEIVER_PITCH_COMMAND_SIGN *
+        apply_deadband(receiver->pitch, data->config.stick_deadband);
     yaw_command = apply_deadband(receiver->yaw,
                                  data->config.stick_deadband);
 
@@ -169,7 +174,7 @@ FlightControl_Status_t FlightControl_Update(
     }
 
     roll_rate_deg_s = imu->gyro_rad_s.x * RAD_TO_DEG;
-    pitch_rate_deg_s = AIRFRAME_PITCH_SENSOR_SIGN *
+    pitch_rate_deg_s = AIRFRAME_PITCH_GYRO_SIGN *
                        imu->gyro_rad_s.y * RAD_TO_DEG;
     yaw_rate_deg_s = imu->gyro_rad_s.z * RAD_TO_DEG;
 
@@ -352,7 +357,7 @@ static bool update_attitude(FlightControl_Data_t *data,
     {
         accel_roll = atan2f(data->upright_accel_z_sign * ay,
                             data->upright_accel_z_sign * az);
-        accel_pitch = AIRFRAME_PITCH_SENSOR_SIGN *
+        accel_pitch = AIRFRAME_PITCH_ACCEL_SIGN *
             atan2f(-data->upright_accel_z_sign * ax,
                    sqrtf((ay * ay) + (az * az)));
     }
@@ -375,7 +380,7 @@ static bool update_attitude(FlightControl_Data_t *data,
     }
     else
     {
-        body_pitch_rate = AIRFRAME_PITCH_SENSOR_SIGN *
+        body_pitch_rate = AIRFRAME_PITCH_GYRO_SIGN *
                           imu->gyro_rad_s.y;
         roll_rate = imu->gyro_rad_s.x +
             sinf(data->estimated_roll_rad) *

@@ -2,8 +2,8 @@
  * @file esc_pwm.c
  * @author Alberto Vazquez
  * @brief Synchronized PWM0 outputs for four standard pulse-input ESCs.
- * @version 1.0.0
- * @date 2026-09-21
+ * @version 1.1.0
+ * @date 2026-09-23
  */
 
 #include <string.h>
@@ -29,11 +29,11 @@
                                          PWM_GEN_MODE_SYNC | \
                                          PWM_GEN_MODE_DBG_RUN)
 
-/* Motor order: front-left, front-right, rear-right, rear-left. */
-#define ESC_PWM_FRONT_LEFT_OUTPUT       PWM_OUT_0
-#define ESC_PWM_FRONT_RIGHT_OUTPUT      PWM_OUT_2
-#define ESC_PWM_REAR_RIGHT_OUTPUT       PWM_OUT_4
-#define ESC_PWM_REAR_LEFT_OUTPUT        PWM_OUT_6
+/* Physical motor positions confirmed on the assembled airframe. */
+#define ESC_PWM_FRONT_LEFT_OUTPUT       PWM_OUT_0  /* PF0 */
+#define ESC_PWM_FRONT_RIGHT_OUTPUT      PWM_OUT_2  /* PF2 */
+#define ESC_PWM_REAR_RIGHT_OUTPUT       PWM_OUT_4  /* PG0 */
+#define ESC_PWM_REAR_LEFT_OUTPUT        PWM_OUT_6  /* PK4 */
 
 static bool peripheral_ready(uint32_t peripheral);
 static uint32_t microseconds_to_ticks(const EscPwm_Data_t *data,

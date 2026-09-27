@@ -2,8 +2,8 @@
  * @file motor_output.h
  * @author Alberto Vazquez
  * @brief Conversion from normalized motor commands to synchronized ESC pulses.
- * @version 1.1.0
- * @date 2026-09-21
+ * @version 1.2.0
+ * @date 2026-09-23
  */
 
 #ifndef INCLUDE_MOTOR_OUTPUT_H_
@@ -26,6 +26,7 @@ typedef struct
 {
     uint16_t minimum_pulse_us;
     uint16_t maximum_pulse_us;
+    uint16_t active_idle_pulse_us;
     uint16_t safe_pulse_us;
     uint16_t frame_period_us;
 } MotorOutput_Config_t;
@@ -49,7 +50,10 @@ typedef struct
     MotorOutput_Status_t last_status;
 } MotorOutput_Data_t;
 
-/** Pass NULL for 900 us safe, 1000-2000 us active, and a 6000 us frame. */
+/**
+ * Pass NULL for 1000 us safe, 1180 us active idle, 2000 us maximum,
+ * and a 6000 us frame.
+ */
 MotorOutput_Status_t MotorOutput_Init(
     MotorOutput_Data_t *data,
     uint32_t system_clock_hz,

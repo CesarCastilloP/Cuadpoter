@@ -2,8 +2,8 @@
  * @file esc_pwm.h
  * @author Alberto Vazquez
  * @brief Four-channel hardware PWM driver for standard ESC pulse commands.
- * @version 1.0.0
- * @date 2026-09-21
+ * @version 1.1.0
+ * @date 2026-09-23
  */
 
 #ifndef INCLUDE_ESC_PWM_H_
@@ -39,7 +39,10 @@ typedef struct
     EscPwm_Status_t last_status;
 } EscPwm_Data_t;
 
-/** Configure PWM0 and start all four channels at initial_pulse_us. */
+/**
+ * Configure PWM0 and start all four channels at initial_pulse_us.
+ * Physical mapping: FL=PF0, FR=PF2, RR=PG0, RL=PK4.
+ */
 EscPwm_Status_t EscPwm_Init(EscPwm_Data_t *data,
                             uint32_t system_clock_hz,
                             uint16_t frame_period_us,

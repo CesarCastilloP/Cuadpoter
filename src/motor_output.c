@@ -2,8 +2,8 @@
  * @file motor_output.c
  * @author Alberto Vazquez
  * @brief Safe conversion and delivery of normalized commands to the ESC PWM driver.
- * @version 1.1.0
- * @date 2026-09-21
+ * @version 1.2.0
+ * @date 2026-09-23
  */
 
 #include <string.h>
@@ -13,7 +13,8 @@
 static const MotorOutput_Config_t g_default_config = {
     1000U,  /* Minimum active pulse */
     2000U,  /* Maximum active pulse */
-    900U,   /* Safe/disarmed pulse */
+    1180U,  /* Minimum pulse while control is active */
+    1000U,  /* Valid low-throttle pulse that keeps the ESC armed */
     6000U   /* 166.67 Hz frame, matching the validated Arduino implementation */
 };
 
@@ -39,6 +40,10 @@ MotorOutput_Status_t MotorOutput_Init(
     if((system_clock_hz == 0U) ||
        (selected_config->safe_pulse_us == 0U) ||
        (selected_config->minimum_pulse_us >=
+        selected_config->maximum_pulse_us) ||
+       (selected_config->active_idle_pulse_us <
+        selected_config->minimum_pulse_us) ||
+       (selected_config->active_idle_pulse_us >=
         selected_config->maximum_pulse_us) ||
        (selected_config->safe_pulse_us >
         selected_config->minimum_pulse_us) ||
@@ -139,6 +144,10 @@ static uint16_t normalized_to_pulse(const MotorOutput_Data_t *data,
                              data->config.minimum_pulse_us);
     pulse = (float32_t)data->config.minimum_pulse_us +
             (normalized * pulse_span);
+    if(pulse < (float32_t)data->config.active_idle_pulse_us)
+    {
+        pulse = (float32_t)data->config.active_idle_pulse_us;
+    }
     return (uint16_t)(pulse + 0.5f);
 }
 

@@ -4,8 +4,8 @@
  *
  * @brief System initialization and cooperative flight-sensor scheduler.
  *
- * @version 1.1.0
- * @date 2026-09-15
+ * @version 1.4.0
+ * @date 2026-09-23
  */
 
 #include "functions.h"
@@ -17,18 +17,24 @@
 #include "lsm6ds.h"
 #include "i2c0_drone.h"
 #include "motor_output.h"
+#include "status_led.h"
 #include "uart.h"
 
 /* The IMU is polled faster than its 416 Hz ODR to minimize ready-detection jitter. */
 #define IMU_POLL_RATE_HZ                1000U
 #define RECEIVER_SERVICE_RATE_HZ        100U
 #define BAROMETER_SERVICE_PERIOD_MS     80U
+#define ESC_PREPARATION_TIME_MS         3000U
+#define IMU_CALIBRATION_RETRY_DELAY_MS  250U
 
 static uint32_t config(void);
 static bool schedule_is_due(uint64_t now_cycles,
                             uint64_t period_cycles,
                             uint64_t *next_deadline,
                             volatile uint32_t *missed_period_count);
+static void wait_for_esc_preparation(uint32_t start_ms);
+static LSM6DS_Status_t initialize_imu(void);
+static void halt_initialization(void);
 
 /**
  * @brief Radio receiver data shared with the interrupt-driven decoder.
@@ -45,6 +51,9 @@ FlightControl_Data_t flight_control_data;
 
 /** Motor pulse conversion and synchronized PWM hardware state. */
 MotorOutput_Data_t motor_output_data;
+
+/** LaunchPad initialization-state indicator. */
+StatusLed_Data_t status_led_data;
 
 /**
  * @brief IMU state and flight-ready outputs.
@@ -69,6 +78,11 @@ volatile FlightControl_Status_t g_flight_control_runtime_status =
     FLIGHT_CONTROL_STATUS_NOT_INITIALIZED;
 volatile MotorOutput_Status_t g_motor_output_runtime_status =
     MOTOR_OUTPUT_STATUS_NOT_INITIALIZED;
+volatile StatusLed_Status_t g_status_led_runtime_status =
+    STATUS_LED_STATUS_NOT_INITIALIZED;
+volatile uint32_t g_reset_cause = 0U;
+volatile bool g_system_ready = false;
+volatile uint32_t g_imu_initialization_retry_count = 0U;
 volatile uint32_t g_imu_poll_missed_periods = 0U;
 volatile uint32_t g_receiver_missed_periods = 0U;
 volatile uint32_t g_barometer_missed_periods = 0U;
@@ -190,12 +204,17 @@ static bool schedule_is_due(uint64_t now_cycles,
 static uint32_t config(void)
 {
     uint32_t system_clock_hz;
+    uint32_t esc_start_ms;
     RP4TDM_Status_t receiver_status;
     BMP390L_Status_t barometer_status;
     FlightControl_Status_t flight_control_status;
     MotorOutput_Status_t motor_output_status;
+    StatusLed_Status_t status_led_status;
     LSM6DS_Status_t imu_status;
     I2C0_Status_t i2c_status;
+
+    g_reset_cause = SysCtlResetCauseGet();
+    SysCtlResetCauseClear(g_reset_cause);
 
     system_clock_hz = SysCtlClockFreqSet(SYSCTL_XTAL_25MHZ |
                                         SYSCTL_OSC_MAIN |
@@ -204,73 +223,133 @@ static uint32_t config(void)
                                         120000000U);
     if(system_clock_hz == 0U)
     {
-        while(true)
-        {
-        }
+        halt_initialization();
     }
+
+    status_led_status = StatusLed_Init(&status_led_data);
+    g_status_led_runtime_status = status_led_status;
+    if(status_led_status != STATUS_LED_STATUS_OK)
+    {
+        halt_initialization();
+    }
+    g_status_led_runtime_status = StatusLed_Set(
+        &status_led_data, STATUS_LED_STAGE_ESC_PREPARATION);
 
     SysTick_Init(system_clock_hz);
     if(!Timebase_Init(system_clock_hz))
     {
-        while(true)
-        {
-        }
+        halt_initialization();
     }
 
-    receiver_status = RP4TDM_Init(&rp4tdm_data, 420000U, NULL);
-    if((receiver_status != RP4TDM_STATUS_OK) &&
-       (receiver_status != RP4TDM_STATUS_WAITING_FOR_DATA))
-    {
-        while(true)
-        {
-        }
-    }
-
-    /* Both onboard sensors support 400 kHz fast-mode I2C. */
-    i2c_status = I2C0_Init(system_clock_hz, I2C_400);
-    if(i2c_status != I2C_OK)
-    {
-        while(true)
-        {
-        }
-    }
-
-    barometer_status = BMP390L_Init(&barometer_data);
-    g_barometer_runtime_status = barometer_status;
-
-    /*
-     * Keep the aircraft stationary while 512 fresh samples are collected.
-     * Motion or excessive vibration causes an explicit initialization error.
-    */
-    imu_status = LSM6DS_Init(&lsm6ds_data, &g_imu_axis_map);
-    g_imu_runtime_status = imu_status;
-    if(imu_status != LSM6DS_STATUS_OK)
-    {
-        while(true)
-        {
-        }
-    }
-
-    flight_control_status = FlightControl_Init(&flight_control_data, NULL);
-    g_flight_control_runtime_status = flight_control_status;
-    if(flight_control_status != FLIGHT_CONTROL_STATUS_OK)
-    {
-        while(true)
-        {
-        }
-    }
-
+    /* Start a valid low-throttle PWM signal before any blocking sensor setup. */
     motor_output_status = MotorOutput_Init(&motor_output_data,
                                            system_clock_hz,
                                            NULL);
     g_motor_output_runtime_status = motor_output_status;
     if(motor_output_status != MOTOR_OUTPUT_STATUS_SAFE)
     {
-        while(true)
-        {
-        }
+        halt_initialization();
+    }
+    esc_start_ms = SysTick_Millis();
+
+    receiver_status = RP4TDM_Init(&rp4tdm_data, 420000U, NULL);
+    if((receiver_status != RP4TDM_STATUS_OK) &&
+       (receiver_status != RP4TDM_STATUS_WAITING_FOR_DATA))
+    {
+        halt_initialization();
+    }
+
+    /* Let the ESC startup tones finish before measuring gyro bias. */
+    wait_for_esc_preparation(esc_start_ms);
+    g_status_led_runtime_status = StatusLed_Set(
+        &status_led_data, STATUS_LED_STAGE_SENSOR_INITIALIZATION);
+
+    /* Both onboard sensors support 400 kHz fast-mode I2C. */
+    i2c_status = I2C0_Init(system_clock_hz, I2C_400);
+    if(i2c_status != I2C_OK)
+    {
+        halt_initialization();
+    }
+
+    barometer_status = BMP390L_Init(&barometer_data);
+    g_barometer_runtime_status = barometer_status;
+
+    imu_status = initialize_imu();
+    if(imu_status != LSM6DS_STATUS_OK)
+    {
+        halt_initialization();
+    }
+
+    flight_control_status = FlightControl_Init(&flight_control_data, NULL);
+    g_flight_control_runtime_status = flight_control_status;
+    if(flight_control_status != FLIGHT_CONTROL_STATUS_OK)
+    {
+        halt_initialization();
     }
 
     uart6_init(115200U, NULL);
+    g_status_led_runtime_status = StatusLed_Set(
+        &status_led_data, STATUS_LED_STAGE_READY);
+    g_system_ready = true;
     return system_clock_hz;
+}
+
+/**
+ * @brief Keep a valid low-throttle command long enough for every ESC to arm.
+ */
+static void wait_for_esc_preparation(uint32_t start_ms)
+{
+    uint32_t elapsed_ms = (uint32_t)(SysTick_Millis() - start_ms);
+
+    if(elapsed_ms < ESC_PREPARATION_TIME_MS)
+    {
+        Delay_ms(ESC_PREPARATION_TIME_MS - elapsed_ms);
+    }
+}
+
+/**
+ * @brief Calibrate the IMU after ESC startup vibration has stopped.
+ *
+ * Motion during calibration is recoverable. Keeping the PWM outputs at their
+ * safe pulse and retrying avoids requiring a microcontroller reset.
+ */
+static LSM6DS_Status_t initialize_imu(void)
+{
+    LSM6DS_Status_t status;
+
+    do
+    {
+        status = LSM6DS_Init(&lsm6ds_data, &g_imu_axis_map);
+        g_imu_runtime_status = status;
+
+        if((status == LSM6DS_STATUS_CALIBRATION_MOTION) ||
+           (status == LSM6DS_STATUS_CALIBRATION_TIMEOUT))
+        {
+            if(g_imu_initialization_retry_count < 0xFFFFFFFFU)
+            {
+                g_imu_initialization_retry_count++;
+            }
+            Delay_ms(IMU_CALIBRATION_RETRY_DELAY_MS);
+        }
+    }
+    while((status == LSM6DS_STATUS_CALIBRATION_MOTION) ||
+          (status == LSM6DS_STATUS_CALIBRATION_TIMEOUT));
+
+    return status;
+}
+
+/**
+ * @brief Stop initialization with safe PWM and a visible error indication.
+ */
+static void halt_initialization(void)
+{
+    if(status_led_data.initialized)
+    {
+        g_status_led_runtime_status = StatusLed_Set(
+            &status_led_data, STATUS_LED_STAGE_ERROR);
+    }
+
+    while(true)
+    {
+    }
 }
