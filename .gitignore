@@ -6,5 +6,9 @@ Release/
 ti_appdata/
 *.launches_backup
 
+# Python desktop-tool caches
+__pycache__/
+*.py[cod]
+
 # Unrelated launch configuration copied from another project
 .launches/MCU_Maestro_LittleFinger.launch

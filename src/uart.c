@@ -4,8 +4,8 @@
  *
  * @brief Source file uart, C code for UART module
  *
- * @version 1.0.0
- * @date 2026-06-29
+ * @version 1.1.0
+ * @date 2026-09-27
  */
 
 /**
@@ -120,6 +120,27 @@ void UART0_Sendstring(const uint8_t* str, uint16_t length)
         UARTCharPut(UART0_BASE,
                     (uint8_t)str[i]);
     }
+}
+
+/**
+ * @brief Fill the available UART0 FIFO space without waiting.
+ * @return Number of bytes accepted by the hardware FIFO.
+ */
+uint32_t UART0_SendAvailable(const uint8_t* data, uint32_t length)
+{
+    uint32_t count = 0U;
+
+    if(data == NULL)
+    {
+        return 0U;
+    }
+
+    while((count < length) &&
+          UARTCharPutNonBlocking(UART0_BASE, data[count]))
+    {
+        count++;
+    }
+    return count;
 }
 
 /**

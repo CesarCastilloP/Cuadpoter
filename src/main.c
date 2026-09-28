@@ -4,8 +4,8 @@
  *
  * @brief System initialization and cooperative flight-sensor scheduler.
  *
- * @version 1.4.0
- * @date 2026-09-23
+ * @version 1.5.0
+ * @date 2026-09-27
  */
 
 #include "functions.h"
@@ -18,6 +18,7 @@
 #include "i2c0_drone.h"
 #include "motor_output.h"
 #include "status_led.h"
+#include "telemetry.h"
 #include "uart.h"
 
 /* The IMU is polled faster than its 416 Hz ODR to minimize ready-detection jitter. */
@@ -55,6 +56,9 @@ MotorOutput_Data_t motor_output_data;
 /** LaunchPad initialization-state indicator. */
 StatusLed_Data_t status_led_data;
 
+/** Binary flight telemetry sent through the LaunchPad USB virtual COM port. */
+Telemetry_Data_t telemetry_data;
+
 /**
  * @brief IMU state and flight-ready outputs.
  *
@@ -80,6 +84,8 @@ volatile MotorOutput_Status_t g_motor_output_runtime_status =
     MOTOR_OUTPUT_STATUS_NOT_INITIALIZED;
 volatile StatusLed_Status_t g_status_led_runtime_status =
     STATUS_LED_STATUS_NOT_INITIALIZED;
+volatile Telemetry_Status_t g_telemetry_runtime_status =
+    TELEMETRY_STATUS_NOT_INITIALIZED;
 volatile uint32_t g_reset_cause = 0U;
 volatile bool g_system_ready = false;
 volatile uint32_t g_imu_initialization_retry_count = 0U;
@@ -156,6 +162,12 @@ int main(void)
             g_barometer_runtime_status =
                 BMP390L_Update(&barometer_data);
         }
+
+        g_telemetry_runtime_status = Telemetry_Update(
+            &telemetry_data,
+            &lsm6ds_data,
+            &flight_control_data,
+            &motor_output_data);
     }
 }
 
@@ -210,6 +222,7 @@ static uint32_t config(void)
     FlightControl_Status_t flight_control_status;
     MotorOutput_Status_t motor_output_status;
     StatusLed_Status_t status_led_status;
+    Telemetry_Status_t telemetry_status;
     LSM6DS_Status_t imu_status;
     I2C0_Status_t i2c_status;
 
@@ -283,6 +296,16 @@ static uint32_t config(void)
     flight_control_status = FlightControl_Init(&flight_control_data, NULL);
     g_flight_control_runtime_status = flight_control_status;
     if(flight_control_status != FLIGHT_CONTROL_STATUS_OK)
+    {
+        halt_initialization();
+    }
+
+    telemetry_status = Telemetry_Init(
+        &telemetry_data,
+        TELEMETRY_DEFAULT_BAUD_RATE,
+        TELEMETRY_DEFAULT_OUTPUT_RATE_HZ);
+    g_telemetry_runtime_status = telemetry_status;
+    if(telemetry_status != TELEMETRY_STATUS_OK)
     {
         halt_initialization();
     }

@@ -4,8 +4,8 @@
  *
  * @brief header file uart, h code for UART module
  *
- * @version 1.0.0
- * @date 2026-06-29
+ * @version 1.1.0
+ * @date 2026-09-27
  */
 
 /**
@@ -46,6 +46,7 @@ void uart0_isr(void);
 void uart0_init(uint32_t baudrate, void (*callback)(uint8_t));
 void UART0_Sendbyte(uint8_t data);
 void UART0_Sendstring(const uint8_t* str, uint16_t length);
+uint32_t UART0_SendAvailable(const uint8_t* data, uint32_t length);
 int32_t UART0_ReadByte(uint32_t timeout);
 uint32_t UART0_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout);
 void uart0_callback(uart_callback_t cb);
