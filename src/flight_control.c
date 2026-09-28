@@ -2,8 +2,8 @@
  * @file flight_control.c
  * @author Alberto Vazquez
  * @brief Cascaded attitude/rate controller with normalized X-frame outputs.
- * @version 1.2.2
- * @date 2026-09-23
+ * @version 1.4.0
+ * @date 2026-09-28
  */
 
 #include <math.h>
@@ -14,8 +14,11 @@
 #define RAD_TO_DEG                     57.2957795f
 #define DEG_TO_RAD                     0.0174532925f
 #define STANDARD_GRAVITY_MPS2          9.80665f
-#define MIN_ACCEL_NORM_MPS2            (0.75f * STANDARD_GRAVITY_MPS2)
-#define MAX_ACCEL_NORM_MPS2            (1.25f * STANDARD_GRAVITY_MPS2)
+#define MIN_ACCEL_NORM_MPS2            (0.90f * STANDARD_GRAVITY_MPS2)
+#define MAX_ACCEL_NORM_MPS2            (1.10f * STANDARD_GRAVITY_MPS2)
+#define MIN_LEVEL_NORM_MPS2            (0.85f * STANDARD_GRAVITY_MPS2)
+#define MAX_LEVEL_NORM_MPS2            (1.15f * STANDARD_GRAVITY_MPS2)
+#define MAX_LEVEL_TILT_RAD              (15.0f * DEG_TO_RAD)
 #define MAX_ESTIMATED_PITCH_RAD        (80.0f * DEG_TO_RAD)
 #define TWO_PI                         (2.0f * M_PI)
 
@@ -31,12 +34,15 @@ static const FlightControl_Config_t g_default_config = {
     20.0f,
     180.0f,
     150.0f,
-    5.0f,
+    3.5f,
     0.03f,
     0.05f,
-    0.50f,
-    { 0.0035f, 0.0015f, 0.000018f, 0.12f, 0.35f, 30.0f },
-    { 0.0050f, 0.0030f, 0.000025f, 0.18f, 0.45f, 30.0f },
+    0.35f,
+    5.0f,
+    30.0f,
+    1.00f,
+    { 0.0025f, 0.0008f, 0.000010f, 0.08f, 0.28f, 30.0f },
+    { 0.0030f, 0.0015f, 0.000012f, 0.14f, 0.32f, 30.0f },
     { 0.0030f, 0.0005f, 0.000000f, 0.10f, 0.20f, 30.0f }
 };
 
@@ -47,6 +53,8 @@ static float32_t wrap_angle(float32_t angle_rad);
 static float32_t apply_deadband(float32_t value, float32_t deadband);
 static bool pid_config_is_valid(const FlightControl_PIDConfig_t *config);
 static bool config_is_valid(const FlightControl_Config_t *config);
+static bool level_reference_is_valid(
+    const LSM6DS_Calibration_t *imu_calibration);
 static void reset_pid(FlightControl_PIDState_t *state);
 static void reset_controllers(FlightControl_Data_t *data);
 static void zero_actuation(FlightControl_Data_t *data);
@@ -54,6 +62,10 @@ static void zero_commands_and_actuation(FlightControl_Data_t *data);
 static FlightControl_Status_t disable_control(
     FlightControl_Data_t *data,
     FlightControl_Status_t status);
+static void update_accel_filter(FlightControl_Data_t *data,
+                                const LSM6DS_Sample_t *imu);
+static void update_rate_filter(FlightControl_Data_t *data,
+                               const LSM6DS_Sample_t *imu);
 static bool update_attitude(FlightControl_Data_t *data,
                             const LSM6DS_Sample_t *imu);
 static float32_t update_pid(const FlightControl_PIDConfig_t *config,
@@ -61,14 +73,21 @@ static float32_t update_pid(const FlightControl_PIDConfig_t *config,
                             float32_t setpoint_deg_s,
                             float32_t measurement_deg_s,
                             float32_t dt_s,
+                            bool integrator_enabled,
                             FlightControl_AxisOutput_t *output);
 static void mix_x_frame(FlightControl_Data_t *data);
 
 FlightControl_Status_t FlightControl_Init(
     FlightControl_Data_t *data,
-    const FlightControl_Config_t *config)
+    const FlightControl_Config_t *config,
+    const LSM6DS_Calibration_t *imu_calibration)
 {
     const FlightControl_Config_t *selected_config;
+    const LSM6DS_Vector3f_t *level_accel_mps2;
+    float32_t horizontal_norm;
+    float32_t level_roll_rad;
+    float32_t level_pitch_rad;
+    float32_t upright_accel_z_sign;
 
     if(data == NULL)
     {
@@ -80,9 +99,41 @@ FlightControl_Status_t FlightControl_Init(
     {
         return FLIGHT_CONTROL_STATUS_INVALID_CONFIG;
     }
+    if(!level_reference_is_valid(imu_calibration))
+    {
+        return FLIGHT_CONTROL_STATUS_INVALID_LEVEL_REFERENCE;
+    }
+
+    level_accel_mps2 = &imu_calibration->level_accel_mps2;
+    upright_accel_z_sign =
+        (level_accel_mps2->z >= 0.0f) ? 1.0f : -1.0f;
+    horizontal_norm = sqrtf(
+        (level_accel_mps2->y * level_accel_mps2->y) +
+        (level_accel_mps2->z * level_accel_mps2->z));
+    level_roll_rad = atan2f(
+        upright_accel_z_sign * level_accel_mps2->y,
+        upright_accel_z_sign * level_accel_mps2->z);
+    level_pitch_rad = AIRFRAME_PITCH_ACCEL_SIGN *
+        atan2f(-upright_accel_z_sign * level_accel_mps2->x,
+               horizontal_norm);
+    if((fabsf(level_roll_rad) > MAX_LEVEL_TILT_RAD) ||
+       (fabsf(level_pitch_rad) > MAX_LEVEL_TILT_RAD))
+    {
+        return FLIGHT_CONTROL_STATUS_INVALID_LEVEL_REFERENCE;
+    }
 
     memset(data, 0, sizeof(*data));
     data->config = *selected_config;
+    data->upright_accel_z_sign = upright_accel_z_sign;
+    data->filtered_accel_mps2 = *level_accel_mps2;
+    data->accel_filter_initialized = true;
+    data->level_roll_rad = level_roll_rad;
+    data->level_pitch_rad = level_pitch_rad;
+    data->level_reference.roll_deg =
+        data->level_roll_rad * RAD_TO_DEG;
+    data->level_reference.pitch_deg =
+        data->level_pitch_rad * RAD_TO_DEG;
+    data->level_reference.valid = true;
     data->initialized = true;
     data->last_status = FLIGHT_CONTROL_STATUS_OK;
     return data->last_status;
@@ -124,6 +175,8 @@ FlightControl_Status_t FlightControl_Update(
 
     data->output.timestamp_us = imu->timestamp_us;
     data->output.sequence++;
+    update_accel_filter(data, imu);
+    update_rate_filter(data, imu);
     if(!update_attitude(data, imu))
     {
         return disable_control(data, FLIGHT_CONTROL_STATUS_INVALID_IMU);
@@ -173,28 +226,35 @@ FlightControl_Status_t FlightControl_Update(
         return data->last_status;
     }
 
-    roll_rate_deg_s = imu->gyro_rad_s.x * RAD_TO_DEG;
+    data->output.integrator_enabled =
+        data->output.setpoint.throttle >=
+        data->config.integrator_enable_throttle;
+
+    roll_rate_deg_s = data->filtered_gyro_rad_s.x * RAD_TO_DEG;
     pitch_rate_deg_s = AIRFRAME_PITCH_GYRO_SIGN *
-                       imu->gyro_rad_s.y * RAD_TO_DEG;
-    yaw_rate_deg_s = imu->gyro_rad_s.z * RAD_TO_DEG;
+                       data->filtered_gyro_rad_s.y * RAD_TO_DEG;
+    yaw_rate_deg_s = data->filtered_gyro_rad_s.z * RAD_TO_DEG;
 
     (void)update_pid(&data->config.roll_rate,
                      &data->roll_pid,
                      data->output.setpoint.roll_rate_deg_s,
                      roll_rate_deg_s,
                      imu->dt_s,
+                     data->output.integrator_enabled,
                      &data->output.roll);
     (void)update_pid(&data->config.pitch_rate,
                      &data->pitch_pid,
                      data->output.setpoint.pitch_rate_deg_s,
                      pitch_rate_deg_s,
                      imu->dt_s,
+                     data->output.integrator_enabled,
                      &data->output.pitch);
     (void)update_pid(&data->config.yaw_rate,
                      &data->yaw_pid,
                      data->output.setpoint.yaw_rate_deg_s,
                      yaw_rate_deg_s,
                      imu->dt_s,
+                     data->output.integrator_enabled,
                      &data->output.yaw);
 
     mix_x_frame(data);
@@ -276,11 +336,40 @@ static bool config_is_valid(const FlightControl_Config_t *config)
            isfinite(config->minimum_control_throttle) &&
            (config->minimum_control_throttle >= 0.0f) &&
            (config->minimum_control_throttle < 1.0f) &&
+           isfinite(config->integrator_enable_throttle) &&
+           (config->integrator_enable_throttle >
+            config->minimum_control_throttle) &&
+           (config->integrator_enable_throttle < 1.0f) &&
+           isfinite(config->accel_filter_cutoff_hz) &&
+           (config->accel_filter_cutoff_hz > 0.0f) &&
+           isfinite(config->rate_filter_cutoff_hz) &&
+           (config->rate_filter_cutoff_hz > 0.0f) &&
            isfinite(config->attitude_correction_time_s) &&
            (config->attitude_correction_time_s > 0.0f) &&
            pid_config_is_valid(&config->roll_rate) &&
            pid_config_is_valid(&config->pitch_rate) &&
            pid_config_is_valid(&config->yaw_rate);
+}
+
+static bool level_reference_is_valid(
+    const LSM6DS_Calibration_t *imu_calibration)
+{
+    const LSM6DS_Vector3f_t *level_accel_mps2;
+    float32_t norm;
+
+    if((imu_calibration == NULL) || !imu_calibration->level_valid)
+    {
+        return false;
+    }
+
+    level_accel_mps2 = &imu_calibration->level_accel_mps2;
+    norm = sqrtf(
+        (level_accel_mps2->x * level_accel_mps2->x) +
+        (level_accel_mps2->y * level_accel_mps2->y) +
+        (level_accel_mps2->z * level_accel_mps2->z));
+    return isfinite(norm) &&
+           (norm >= MIN_LEVEL_NORM_MPS2) &&
+           (norm <= MAX_LEVEL_NORM_MPS2);
 }
 
 static void reset_pid(FlightControl_PIDState_t *state)
@@ -302,6 +391,7 @@ static void zero_actuation(FlightControl_Data_t *data)
     memset(&data->output.yaw, 0, sizeof(data->output.yaw));
     memset(&data->output.motors, 0, sizeof(data->output.motors));
     data->output.mixer_scale = 0.0f;
+    data->output.integrator_enabled = false;
     data->output.active = false;
 }
 
@@ -322,6 +412,60 @@ static FlightControl_Status_t disable_control(
     return status;
 }
 
+/** Filters motor vibration before acceleration is qualified as gravity. */
+static void update_accel_filter(FlightControl_Data_t *data,
+                                const LSM6DS_Sample_t *imu)
+{
+    float32_t filter_time_s;
+    float32_t alpha;
+
+    if(!data->accel_filter_initialized)
+    {
+        data->filtered_accel_mps2 = imu->accel_mps2;
+        data->accel_filter_initialized = true;
+        return;
+    }
+
+    filter_time_s = 1.0f /
+        (TWO_PI * data->config.accel_filter_cutoff_hz);
+    alpha = imu->dt_s / (filter_time_s + imu->dt_s);
+    data->filtered_accel_mps2.x += alpha *
+        (imu->accel_mps2.x - data->filtered_accel_mps2.x);
+    data->filtered_accel_mps2.y += alpha *
+        (imu->accel_mps2.y - data->filtered_accel_mps2.y);
+    data->filtered_accel_mps2.z += alpha *
+        (imu->accel_mps2.z - data->filtered_accel_mps2.z);
+}
+
+/**
+ * Filters the measured body rates before they enter either the estimator or
+ * the rate PID. This prevents propeller vibration from directly commanding
+ * alternating full-scale motor corrections.
+ */
+static void update_rate_filter(FlightControl_Data_t *data,
+                               const LSM6DS_Sample_t *imu)
+{
+    float32_t filter_time_s;
+    float32_t alpha;
+
+    if(!data->rate_filter_initialized)
+    {
+        data->filtered_gyro_rad_s = imu->gyro_rad_s;
+        data->rate_filter_initialized = true;
+        return;
+    }
+
+    filter_time_s = 1.0f /
+        (TWO_PI * data->config.rate_filter_cutoff_hz);
+    alpha = imu->dt_s / (filter_time_s + imu->dt_s);
+    data->filtered_gyro_rad_s.x += alpha *
+        (imu->gyro_rad_s.x - data->filtered_gyro_rad_s.x);
+    data->filtered_gyro_rad_s.y += alpha *
+        (imu->gyro_rad_s.y - data->filtered_gyro_rad_s.y);
+    data->filtered_gyro_rad_s.z += alpha *
+        (imu->gyro_rad_s.z - data->filtered_gyro_rad_s.z);
+}
+
 static bool update_attitude(FlightControl_Data_t *data,
                             const LSM6DS_Sample_t *imu)
 {
@@ -339,27 +483,25 @@ static bool update_attitude(FlightControl_Data_t *data,
     float32_t correction;
     bool accel_trusted;
 
-    ax = imu->accel_mps2.x;
-    ay = imu->accel_mps2.y;
-    az = imu->accel_mps2.z;
+    ax = data->filtered_accel_mps2.x;
+    ay = data->filtered_accel_mps2.y;
+    az = data->filtered_accel_mps2.z;
     accel_norm = sqrtf((ax * ax) + (ay * ay) + (az * az));
-    accel_trusted = isfinite(accel_norm) &&
-                    (accel_norm >= MIN_ACCEL_NORM_MPS2) &&
-                    (accel_norm <= MAX_ACCEL_NORM_MPS2);
-
-    if(accel_trusted && !data->attitude_initialized)
-    {
-        /* Learn whether an upright installation reports +1 g or -1 g on Z. */
-        data->upright_accel_z_sign = (az >= 0.0f) ? 1.0f : -1.0f;
-    }
+    data->accel_trusted = isfinite(accel_norm) &&
+                          (accel_norm >= MIN_ACCEL_NORM_MPS2) &&
+                          (accel_norm <= MAX_ACCEL_NORM_MPS2);
+    accel_trusted = data->accel_trusted;
 
     if(accel_trusted)
     {
-        accel_roll = atan2f(data->upright_accel_z_sign * ay,
-                            data->upright_accel_z_sign * az);
-        accel_pitch = AIRFRAME_PITCH_ACCEL_SIGN *
+        accel_roll = wrap_angle(
+            atan2f(data->upright_accel_z_sign * ay,
+                   data->upright_accel_z_sign * az) -
+            data->level_roll_rad);
+        accel_pitch = (AIRFRAME_PITCH_ACCEL_SIGN *
             atan2f(-data->upright_accel_z_sign * ax,
-                   sqrtf((ay * ay) + (az * az)));
+                   sqrtf((ay * ay) + (az * az)))) -
+            data->level_pitch_rad;
     }
     else
     {
@@ -381,15 +523,17 @@ static bool update_attitude(FlightControl_Data_t *data,
     else
     {
         body_pitch_rate = AIRFRAME_PITCH_GYRO_SIGN *
-                          imu->gyro_rad_s.y;
-        roll_rate = imu->gyro_rad_s.x +
+                          data->filtered_gyro_rad_s.y;
+        roll_rate = data->filtered_gyro_rad_s.x +
             sinf(data->estimated_roll_rad) *
             tanf(data->estimated_pitch_rad) * body_pitch_rate +
             cosf(data->estimated_roll_rad) *
-            tanf(data->estimated_pitch_rad) * imu->gyro_rad_s.z;
+            tanf(data->estimated_pitch_rad) *
+            data->filtered_gyro_rad_s.z;
         pitch_rate =
             cosf(data->estimated_roll_rad) * body_pitch_rate -
-            sinf(data->estimated_roll_rad) * imu->gyro_rad_s.z;
+            sinf(data->estimated_roll_rad) *
+            data->filtered_gyro_rad_s.z;
         predicted_roll = wrap_angle(
             data->estimated_roll_rad + (roll_rate * imu->dt_s));
         predicted_pitch = clampf(
@@ -428,6 +572,7 @@ static float32_t update_pid(const FlightControl_PIDConfig_t *config,
                             float32_t setpoint_deg_s,
                             float32_t measurement_deg_s,
                             float32_t dt_s,
+                            bool integrator_enabled,
                             FlightControl_AxisOutput_t *output)
 {
     float32_t raw_derivative;
@@ -456,10 +601,19 @@ static float32_t update_pid(const FlightControl_PIDConfig_t *config,
         (raw_derivative - state->filtered_derivative);
     state->previous_measurement = measurement_deg_s;
 
-    candidate_integrator = clampf(
-        state->integrator + (config->ki * output->error_deg_s * dt_s),
-        -config->integrator_limit,
-        config->integrator_limit);
+    if(integrator_enabled)
+    {
+        candidate_integrator = clampf(
+            state->integrator +
+            (config->ki * output->error_deg_s * dt_s),
+            -config->integrator_limit,
+            config->integrator_limit);
+    }
+    else
+    {
+        state->integrator = 0.0f;
+        candidate_integrator = 0.0f;
+    }
     output->derivative = -config->kd * state->filtered_derivative;
     unsaturated = output->proportional + candidate_integrator +
                   output->derivative;

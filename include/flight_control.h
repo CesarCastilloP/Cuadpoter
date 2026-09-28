@@ -2,8 +2,8 @@
  * @file flight_control.h
  * @author Alberto Vazquez
  * @brief Cascaded attitude and angular-rate control for an X quadcopter.
- * @version 1.2.2
- * @date 2026-09-23
+ * @version 1.4.0
+ * @date 2026-09-28
  */
 
 #ifndef INCLUDE_FLIGHT_CONTROL_H_
@@ -20,6 +20,7 @@ typedef enum
     FLIGHT_CONTROL_STATUS_INVALID_IMU,
     FLIGHT_CONTROL_STATUS_INVALID_ARGUMENT,
     FLIGHT_CONTROL_STATUS_INVALID_CONFIG,
+    FLIGHT_CONTROL_STATUS_INVALID_LEVEL_REFERENCE,
     FLIGHT_CONTROL_STATUS_NOT_INITIALIZED
 } FlightControl_Status_t;
 
@@ -43,6 +44,12 @@ typedef struct
     float32_t angle_kp;
     float32_t stick_deadband;
     float32_t minimum_control_throttle;
+    /** I terms remain cleared below this throttle to prevent ground windup. */
+    float32_t integrator_enable_throttle;
+    /** Low-pass cutoff for acceleration used by the attitude estimator. */
+    float32_t accel_filter_cutoff_hz;
+    /** First-order low-pass cutoff applied to gyro rates used by control. */
+    float32_t rate_filter_cutoff_hz;
     float32_t attitude_correction_time_s;
     FlightControl_PIDConfig_t roll_rate;
     FlightControl_PIDConfig_t pitch_rate;
@@ -95,6 +102,7 @@ typedef struct
     uint32_t sequence;
     bool active;
     bool valid;
+    bool integrator_enabled;
     FlightControl_Attitude_t attitude;
     FlightControl_Setpoint_t setpoint;
     FlightControl_AxisOutput_t roll;
@@ -118,22 +126,35 @@ typedef struct
     bool initialized;
     FlightControl_Config_t config;
     FlightControl_Output_t output;
+    /** Startup board attitude removed from the public roll and pitch angles. */
+    FlightControl_Attitude_t level_reference;
     FlightControl_Status_t last_status;
 
     /* Private runtime state. */
     float32_t estimated_roll_rad;
     float32_t estimated_pitch_rad;
+    float32_t level_roll_rad;
+    float32_t level_pitch_rad;
     float32_t upright_accel_z_sign;
+    LSM6DS_Vector3f_t filtered_accel_mps2;
+    LSM6DS_Vector3f_t filtered_gyro_rad_s;
+    bool accel_trusted;
     bool attitude_initialized;
+    bool accel_filter_initialized;
+    bool rate_filter_initialized;
     FlightControl_PIDState_t roll_pid;
     FlightControl_PIDState_t pitch_pid;
     FlightControl_PIDState_t yaw_pid;
 } FlightControl_Data_t;
 
-/** Pass NULL for conservative initial gains intended for bench validation. */
+/**
+ * Pass NULL for the default controller configuration. The level reference
+ * must be the stationary acceleration mean captured during IMU calibration.
+ */
 FlightControl_Status_t FlightControl_Init(
     FlightControl_Data_t *data,
-    const FlightControl_Config_t *config);
+    const FlightControl_Config_t *config,
+    const LSM6DS_Calibration_t *imu_calibration);
 
 /**
  * Updates attitude, rate controllers, and normalized motor variables.

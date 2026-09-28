@@ -14,6 +14,10 @@ status = LSM6DS_Update(&imu);
 
 `LSM6DS_Init()` must run once after I2C and the time base are initialized.
 Keep the aircraft still while it collects 512 calibration samples.
+That stationary window produces both the gyroscope bias and the mean gravity
+vector used by `FlightControl_Init()` as the level attitude reference. Power
+the aircraft on while its frame is level; the controller rejects a reference
+tilted more than 15 degrees.
 
 Call `LSM6DS_Update()` from the main scheduler. A return value of
 `LSM6DS_STATUS_NO_NEW_DATA` is normal because the code polls at 1 kHz while
@@ -37,9 +41,19 @@ imu.sample.valid
 | `sample.timestamp_us` | us | Monotonic acquisition timestamp |
 | `sample.temperature_c` | deg C | IMU temperature |
 | `sample.sequence` | count | Increments once per fresh sample |
+| `calibration.level_accel_mps2` | m/s^2 | Stationary gravity vector used to zero roll and pitch |
 
 Raw values remain available in `sample.raw_gyro` and `sample.raw_accel` for
 bench diagnostics.
+
+Flight control applies a first-order 5 Hz low-pass to `sample.accel_mps2`
+before calculating gravity magnitude or accelerometer attitude. This filter
+prevents motor vibration from repeatedly removing the absolute roll/pitch
+reference. The unfiltered SI acceleration remains available here and in USB
+telemetry so the mechanical vibration can still be measured. In CCS,
+`flight_control_data.filtered_accel_mps2` is the value consumed by the
+estimator and `flight_control_data.accel_trusted` indicates whether its norm
+is inside 0.90 g...1.10 g.
 
 ## Axis mapping
 
@@ -82,6 +96,8 @@ The most useful fields are:
 - `initialized`: must be `1`
 - `device_id`: must be `0x6B`
 - `calibration.gyro_valid`: must be `1`
+- `calibration.level_valid`: must be `1`
+- `calibration.level_accel_mps2`: should remain close to one g
 - `sample.sequence`: must increase continuously
 - `sample.valid`: must be `1` on accepted samples
 - `last_status`: normally alternates between `OK` and `NO_NEW_DATA`

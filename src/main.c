@@ -4,8 +4,8 @@
  *
  * @brief System initialization and cooperative flight-sensor scheduler.
  *
- * @version 1.5.0
- * @date 2026-09-27
+ * @version 1.6.0
+ * @date 2026-09-28
  */
 
 #include "functions.h"
@@ -293,7 +293,10 @@ static uint32_t config(void)
         halt_initialization();
     }
 
-    flight_control_status = FlightControl_Init(&flight_control_data, NULL);
+    flight_control_status = FlightControl_Init(
+        &flight_control_data,
+        NULL,
+        &lsm6ds_data.calibration);
     g_flight_control_runtime_status = flight_control_status;
     if(flight_control_status != FLIGHT_CONTROL_STATUS_OK)
     {

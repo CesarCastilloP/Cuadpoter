@@ -2,8 +2,8 @@
  * @file lsm6ds.c
  * @author Alberto Vazquez
  * @brief Instance-based LSM6DSR acquisition and calibration.
- * @version 2.0.0
- * @date 2026-09-15
+ * @version 2.1.0
+ * @date 2026-09-28
  */
 
 #include <math.h>
@@ -463,7 +463,9 @@ LSM6DS_Status_t LSM6DS_CalibrateGyroscope(LSM6DS_Data_t *data)
     }
 
     data->calibration.gyro_bias_rad_s = rate_mean;
+    data->calibration.level_accel_mps2 = accel_mean;
     data->calibration.gyro_valid = true;
+    data->calibration.level_valid = true;
     data->last_sample_timestamp_us = 0ULL;
     return finish(data, LSM6DS_STATUS_OK);
 }

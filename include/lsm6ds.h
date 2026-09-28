@@ -2,8 +2,8 @@
  * @file lsm6ds.h
  * @author Alberto Vazquez
  * @brief Flight-oriented LSM6DSR interface.
- * @version 2.0.0
- * @date 2026-09-15
+ * @version 2.1.0
+ * @date 2026-09-28
  */
 
 #ifndef INCLUDE_LSM6DS_H_
@@ -67,7 +67,10 @@ typedef struct
 typedef struct
 {
     LSM6DS_Vector3f_t gyro_bias_rad_s;
+    /** Mean stationary acceleration captured during startup calibration. */
+    LSM6DS_Vector3f_t level_accel_mps2;
     bool gyro_valid;
+    bool level_valid;
 } LSM6DS_Calibration_t;
 
 /**
@@ -111,7 +114,8 @@ typedef struct
 } LSM6DS_Data_t;
 
 /**
- * Detects, configures, and calibrates the IMU. Keep the vehicle stationary.
+ * Detects, configures, and calibrates the IMU. Keep the vehicle stationary
+ * and level so the acceleration mean can define the aircraft attitude zero.
  * Pass NULL for an identity sensor-to-body axis map.
  */
 LSM6DS_Status_t LSM6DS_Init(LSM6DS_Data_t *data,
@@ -123,7 +127,7 @@ LSM6DS_Status_t LSM6DS_Init(LSM6DS_Data_t *data,
  */
 LSM6DS_Status_t LSM6DS_Update(LSM6DS_Data_t *data);
 
-/** Recalculates gyro bias while the vehicle is stationary. */
+/** Recalculates gyro bias and the level acceleration reference. */
 LSM6DS_Status_t LSM6DS_CalibrateGyroscope(LSM6DS_Data_t *data);
 
 #endif /* INCLUDE_LSM6DS_H_ */

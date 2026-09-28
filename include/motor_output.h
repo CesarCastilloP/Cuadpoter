@@ -2,8 +2,8 @@
  * @file motor_output.h
  * @author Alberto Vazquez
  * @brief Conversion from normalized motor commands to synchronized ESC pulses.
- * @version 1.2.0
- * @date 2026-09-23
+ * @version 1.3.0
+ * @date 2026-09-28
  */
 
 #ifndef INCLUDE_MOTOR_OUTPUT_H_
@@ -46,6 +46,10 @@ typedef struct
     bool enabled;
     MotorOutput_Config_t config;
     MotorOutput_Pulses_t pulse_us;
+    /** Common upward shift used to preserve torque near active idle. */
+    float32_t collective_shift_us;
+    /** Differential scale; 1.0 means the requested motor spread was kept. */
+    float32_t active_range_scale;
     EscPwm_Data_t pwm;
     MotorOutput_Status_t last_status;
 } MotorOutput_Data_t;

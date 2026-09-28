@@ -81,6 +81,23 @@ schema reproduced by the Python decoder.
 | 32 | `motor_rear_right` | us |
 | 33 | `motor_rear_left` | us |
 
+The three `*_rate_measured` fields are the 30 Hz low-pass filtered angular
+rates actually consumed by the PID. The `accel_x/y/z` fields intentionally
+remain unfiltered so a recording still exposes physical motor vibration; the
+attitude estimator consumes `flight_control_data.filtered_accel_mps2`, which
+has a 5 Hz low-pass. `roll_angle` and `pitch_angle` have the stationary startup
+level reference removed. Below throttle `0.35`, all three integral terms are
+deliberately held at zero to prevent ground windup; this state is observable
+through `flight_control_data.output.integrator_enabled` in CCS but is not
+added to the compact serial frame.
+
+The four motor fields are the final ESC pulses. While active, MotorOutput
+moves all four pulses upward together if one request would fall below
+1180 us. This preserves the requested differential torque. Only when that
+collective shift would exceed 2000 us is the four-motor spread scaled. The
+diagnostics are `motor_output_data.collective_shift_us` and
+`motor_output_data.active_range_scale`.
+
 ## Python/Spyder receiver
 
 `tools/telemetry_dashboard.py` provides the complete PC-side implementation.
