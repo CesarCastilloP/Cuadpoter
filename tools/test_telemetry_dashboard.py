@@ -33,8 +33,19 @@ def make_frame(sequence: int = 7, timestamp_us: int = 123456) -> bytes:
 
 class TelemetryDecoderTests(unittest.TestCase):
     def test_schema_has_expected_size(self) -> None:
-        self.assertEqual(FRAME_SIZE, 156)
-        self.assertEqual(len(SIGNAL_KEYS), 34)
+        self.assertEqual(FRAME_SIZE, 168)
+        self.assertEqual(len(SIGNAL_KEYS), 37)
+        self.assertEqual(
+            SIGNAL_KEYS[1:7],
+            (
+                "accel_x",
+                "accel_y",
+                "accel_z",
+                "imu_gyro_x",
+                "imu_gyro_y",
+                "imu_gyro_z",
+            ),
+        )
 
     def test_partial_reads_and_leading_noise_resynchronize(self) -> None:
         raw = make_frame()

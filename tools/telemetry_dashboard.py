@@ -1,6 +1,6 @@
 """Professional real-time dashboard for MCU_Cuadcopter USB telemetry.
 
-The application decodes schema 1 emitted by ``src/telemetry.c``.  It uses a
+The application decodes schema 2 emitted by ``src/telemetry.c``.  It uses a
 background thread for the serial port and keeps every Tk operation in the main
 thread.  The plots are drawn with Tk Canvas so Spyder only needs ``pyserial``;
 NumPy, Matplotlib and Qt are intentionally not required.
@@ -35,19 +35,19 @@ except ModuleNotFoundError:  # The demo and decoder remain usable without it.
     list_ports = None
 
 
-APP_TITLE = "MCU Cuadcopter · Flight Telemetry"
+APP_TITLE = "MCU Cuadcopter · RAW IMU · Schema 2"
 DEFAULT_BAUD_RATE = 460_800
 EXPECTED_OUTPUT_RATE_HZ = 100.0
 SYNC_WORD = 0xA55A3CC3
 SYNC_BYTES = struct.pack("<I", SYNC_WORD)
-SCHEMA_VERSION = 1
-FRAME_STRUCT = struct.Struct("<IIIQ34f")
+SCHEMA_VERSION = 2
+FRAME_STRUCT = struct.Struct("<IIIQ37f")
 FRAME_SIZE = FRAME_STRUCT.size
 MAX_HISTORY_SAMPLES = 12_000
 SERIAL_READ_TIMEOUT_S = 0.050
 LINK_TIMEOUT_S = 0.500
 
-if FRAME_SIZE != 156:
+if FRAME_SIZE != 168:
     raise RuntimeError(f"Unexpected telemetry frame size: {FRAME_SIZE}")
 
 
@@ -94,6 +94,9 @@ SIGNALS: Tuple[SignalDefinition, ...] = (
     SignalDefinition("accel_x", "Aceleración X", "m/s²", "IMU"),
     SignalDefinition("accel_y", "Aceleración Y", "m/s²", "IMU"),
     SignalDefinition("accel_z", "Aceleración Z", "m/s²", "IMU"),
+    SignalDefinition("imu_gyro_x", "Giroscopio IMU X", "rad/s", "IMU", 5),
+    SignalDefinition("imu_gyro_y", "Giroscopio IMU Y", "rad/s", "IMU", 5),
+    SignalDefinition("imu_gyro_z", "Giroscopio IMU Z", "rad/s", "IMU", 5),
     SignalDefinition("roll_rate_measured", "Rate roll medido", "°/s", "Tasas"),
     SignalDefinition("pitch_rate_measured", "Rate pitch medido", "°/s", "Tasas"),
     SignalDefinition("yaw_rate_measured", "Rate yaw medido", "°/s", "Tasas"),
@@ -132,7 +135,7 @@ SIGNAL_BY_KEY = {signal.key: signal for signal in SIGNALS}
 
 @dataclass(frozen=True)
 class TelemetryFrame:
-    """One completely decoded schema-1 frame."""
+    """One completely decoded schema-2 frame."""
 
     sync: int
     schema_version: int
@@ -501,11 +504,18 @@ class DemoReader(threading.Thread):
         )
         motors = tuple(max(1180.0, 1000.0 + value * 1000.0) for value in normalized)
 
+        imu_gyro_x = math.radians(roll_rate) + 0.01 * math.sin(elapsed * 3.1)
+        imu_gyro_y = math.radians(pitch_rate) + 0.01 * math.cos(elapsed * 2.7)
+        imu_gyro_z = math.radians(yaw_rate) + 0.008 * math.sin(elapsed * 2.3)
+
         values = (
             1.0 / 416.0,
             0.45 * math.sin(elapsed * 0.8),
             0.35 * math.cos(elapsed * 0.7),
             9.80665 + 0.18 * math.sin(elapsed * 1.1),
+            imu_gyro_x,
+            imu_gyro_y,
+            imu_gyro_z,
             roll_rate,
             pitch_rate,
             yaw_rate,
@@ -1005,6 +1015,17 @@ class TelemetryDashboard(tk.Tk):
             (-30.0, 30.0),
         ),
         (
+            "Giroscopio IMU",
+            "Giroscopio directo sin low-pass del controlador",
+            "rad/s",
+            (
+                PlotSeries("imu_gyro_x", "X", SERIES_COLORS[0]),
+                PlotSeries("imu_gyro_y", "Y", SERIES_COLORS[1]),
+                PlotSeries("imu_gyro_z", "Z", SERIES_COLORS[2]),
+            ),
+            None,
+        ),
+        (
             "Tasas",
             "Velocidad angular medida y consignas",
             "°/s",
@@ -1246,7 +1267,7 @@ class TelemetryDashboard(tk.Tk):
         ).pack(anchor="w")
         tk.Label(
             title_block,
-            text="Flight Control Telemetry",
+            text="Flight Control Telemetry · RAW IMU (6 ejes) · Schema 2",
             bg=COLORS["surface"],
             fg=COLORS["text"],
             font=("Segoe UI Semibold", 18),
@@ -1362,12 +1383,18 @@ class TelemetryDashboard(tk.Tk):
 
         notebook = ttk.Notebook(body)
         notebook.pack(fill="both", expand=True)
+        raw_imu_tab = ttk.Frame(notebook, style="TFrame")
         dashboard_tab = ttk.Frame(notebook, style="TFrame")
         values_tab = ttk.Frame(notebook, style="TFrame")
         diagnostics_tab = ttk.Frame(notebook, style="TFrame")
+        notebook.add(raw_imu_tab, text="IMU cruda · 6 ejes")
         notebook.add(dashboard_tab, text="Panel de vuelo")
         notebook.add(values_tab, text="Todas las variables")
         notebook.add(diagnostics_tab, text="Diagnóstico y protocolo")
+
+        self.raw_imu_plots: List[Tuple[LivePlot, Tuple[str, ...]]] = []
+        self.plots: List[Tuple[LivePlot, Tuple[str, ...]]] = []
+        self._build_raw_imu_tab(raw_imu_tab)
 
         dashboard_tab.columnconfigure(0, weight=0, minsize=325)
         dashboard_tab.columnconfigure(1, weight=1)
@@ -1385,7 +1412,6 @@ class TelemetryDashboard(tk.Tk):
 
         self.plot_notebook = ttk.Notebook(dashboard_tab)
         self.plot_notebook.grid(row=0, column=1, sticky="nsew", pady=(8, 0))
-        self.plots: List[Tuple[LivePlot, Tuple[str, ...]]] = []
         for tab_name, title, unit, series, fixed_limits in self.PLOT_CONFIGURATIONS:
             plot = LivePlot(
                 self.plot_notebook,
@@ -1424,6 +1450,45 @@ class TelemetryDashboard(tk.Tk):
             fg=COLORS["muted"],
             font=("Segoe UI", 8),
         ).pack(side="right")
+
+    def _build_raw_imu_tab(self, parent: ttk.Frame) -> None:
+        """Build the default view for the six direct IMU measurements."""
+
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        configurations = (
+            (
+                "Acelerómetro directo de la IMU",
+                "m/s²",
+                (
+                    PlotSeries("accel_x", "X", SERIES_COLORS[0]),
+                    PlotSeries("accel_y", "Y", SERIES_COLORS[1]),
+                    PlotSeries("accel_z", "Z", SERIES_COLORS[2]),
+                ),
+            ),
+            (
+                "Giroscopio directo de la IMU (sin low-pass del controlador)",
+                "rad/s",
+                (
+                    PlotSeries("imu_gyro_x", "X", SERIES_COLORS[0]),
+                    PlotSeries("imu_gyro_y", "Y", SERIES_COLORS[1]),
+                    PlotSeries("imu_gyro_z", "Z", SERIES_COLORS[2]),
+                ),
+            ),
+        )
+
+        for row, (title, unit, series) in enumerate(configurations):
+            plot = LivePlot(
+                parent,
+                title=title,
+                unit=unit,
+                series=series,
+                fixed_limits=None,
+            )
+            plot.grid(row=row, column=0, sticky="nsew", padx=8, pady=4)
+            self.raw_imu_plots.append((plot, tuple(item.key for item in series)))
 
     def _build_values_tab(self, parent: ttk.Frame) -> None:
         container = ttk.Frame(parent, padding=10)
@@ -1539,18 +1604,18 @@ class TelemetryDashboard(tk.Tk):
         protocol_text = (
             "UART0 · PA1 TX · USB VCOM\n"
             "460800 baud · 8N1 · sin flow control\n\n"
-            "Frame fijo: 156 bytes\n"
+            "Frame fijo: 168 bytes\n"
             "0..3    sync = C3 3C 5A A5\n"
-            "4..7    schema_version = 1\n"
+            "4..7    schema_version = 2\n"
             "8..11   sequence (U32)\n"
             "12..19  timestamp_us (U64)\n"
-            "20..155 34 × float32 IEEE-754\n\n"
+            "20..167 37 × float32 IEEE-754\n\n"
             "La trama no contiene CRC ni banderas de validez. El receptor "
             "busca la palabra sync y verifica la versión. Un salto de sequence "
             "indica pérdida de una trama ya creada; un salto de timestamp también "
             "puede revelar snapshots omitidos dentro del firmware.\n\n"
             "CSV: UTF-8, separador coma, punto decimal. Incluye hora del PC, "
-            "tiempo transcurrido, cabecera completa y las 34 señales."
+            "tiempo transcurrido, cabecera completa y las 37 señales."
         )
         tk.Label(
             right,
@@ -1753,8 +1818,24 @@ class TelemetryDashboard(tk.Tk):
                 f"Recibiendo {measured_rate:.1f} trama/s desde {self.current_source}"
             )
         elif self.port_is_open:
-            self.link_card.set("SIN DATOS", self.current_source, COLORS["amber"])
-            self.status_dot.configure(fg=COLORS["amber"])
+            incompatible_frame = (
+                self.decoder_statistics["bytes_received"] > 0
+                and self.decoder_statistics["frames_decoded"] == 0
+                and self.decoder_statistics["invalid_frame_count"] > 0
+            )
+            if incompatible_frame:
+                self.link_card.set(
+                    "TRAMA INCOMPATIBLE",
+                    "Grabe firmware Schema 2",
+                    COLORS["red"],
+                )
+                self.status_dot.configure(fg=COLORS["red"])
+                self.status_variable.set(
+                    "Llegan bytes por UART, pero no corresponden a Schema 2 / 168 bytes."
+                )
+            else:
+                self.link_card.set("SIN DATOS", self.current_source, COLORS["amber"])
+                self.status_dot.configure(fg=COLORS["amber"])
         else:
             self.link_card.set("OFFLINE", "Puerto cerrado", COLORS["red"])
 
@@ -1836,8 +1917,12 @@ class TelemetryDashboard(tk.Tk):
             window_s = float(self.window_variable.get())
         except ValueError:
             window_s = 10.0
-        # Only redraw the visible plot. This keeps the UI responsive with a
-        # full two-minute history while the serial thread continues at 100 Hz.
+        # The two raw-IMU plots are the default analysis view. The flight
+        # panel still redraws only its selected plot to keep the UI responsive.
+        for raw_plot, raw_keys in self.raw_imu_plots:
+            raw_times, raw_values = self.history.plot_data(raw_keys, window_s)
+            raw_plot.set_data(raw_times, raw_values)
+
         selected_index = self.plot_notebook.index("current")
         plot, keys = self.plots[selected_index]
         times, values = self.history.plot_data(keys, window_s)

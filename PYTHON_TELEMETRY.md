@@ -1,7 +1,7 @@
 # Panel de telemetría en Python para Spyder
 
 `tools/telemetry_dashboard.py` recibe la trama binaria del firmware, muestra
-las 34 señales en tiempo real y permite grabar o exportar los datos a CSV. La
+las 37 señales en tiempo real y permite grabar o exportar los datos a CSV. La
 interfaz usa `tkinter` y gráficas propias, por lo que solo necesita `pyserial`.
 
 ## Instalación en Spyder
@@ -32,14 +32,17 @@ la interfaz, las gráficas y la exportación CSV sin conectar el microcontrolado
 
 ## Contenido de la interfaz
 
+- La vista inicial **IMU cruda · 6 ejes** muestra simultáneamente acelerómetro
+  en m/s² y giroscopio en rad/s. El título incluye **RAW IMU · Schema 2** para
+  distinguir esta versión de una ventana anterior que haya quedado abierta.
 - Estado del enlace y edad de la última trama.
 - Frecuencia real recibida y secuencia del firmware.
 - Conteo de saltos de secuencia, huecos de timestamp y resincronizaciones.
 - Indicador de actitud para roll y pitch.
 - Vista superior de los cuatro motores con su pulso en microsegundos.
-- Gráficas de actitud, tasas angulares, errores PID, salidas PID, motores,
-  aceleración y términos P/I/D por eje.
-- Tabla con cabecera y las 34 variables enviadas por el firmware.
+- Gráficas de actitud, giroscopio IMU directo, tasas angulares filtradas,
+  errores PID, salidas PID, motores, aceleración y términos P/I/D por eje.
+- Tabla con cabecera y las 37 variables enviadas por el firmware.
 - Diagnóstico de bytes, tramas, descartes y estado de la grabación.
 
 ## Grabación CSV
@@ -56,7 +59,22 @@ El CSV usa UTF-8, separador coma y punto decimal. Sus columnas son:
 1. Hora ISO del PC.
 2. Tiempo transcurrido desde la conexión.
 3. `sync`, versión, secuencia y timestamp del microcontrolador.
-4. Las 34 señales en el mismo orden de `TELEMETRY.md`.
+4. Las 37 señales en el mismo orden de `TELEMETRY.md`, incluidos los seis
+   valores IMU sin filtrado en unidades físicas.
+
+## Uso para análisis inercial
+
+La IMU produce datos a 416 Hz, mientras que la telemetría guarda el último
+sample disponible a 100 Hz. Por ello, para integrar las filas del CSV use la
+diferencia entre valores consecutivos de `timestamp_us`. No use `imu_dt_s`
+como separación entre filas: ese campo describe el periodo interno de la
+muestra IMU, aproximadamente 2.4 ms.
+
+`accel_x/y/z` contiene fuerza específica e incluye gravedad. Antes de estimar
+velocidad o posición es necesario estimar orientación con el giroscopio,
+rotar la aceleración al marco terrestre, retirar gravedad y bias, filtrar y
+solo entonces integrar. Integrar directamente las columnas del acelerómetro
+produce deriva rápidamente, incluso con el dron inmóvil.
 
 ## Validación del decodificador
 
@@ -77,7 +95,7 @@ del CSV.
 - **Huecos de timestamp:** separación mayor de 15 ms entre snapshots. También
   detecta periodos que el firmware omitió antes de construir una trama.
 - **Bytes descartados:** datos anteriores a la palabra de sincronía.
-- **Candidatos inválidos:** sync encontrada con versión distinta de 1 o valores
+- **Candidatos inválidos:** sync encontrada con versión distinta de 2 o valores
   flotantes no finitos.
 - **Overflow cola PC:** la interfaz no consumió eventos tan rápido como llegaron.
 
