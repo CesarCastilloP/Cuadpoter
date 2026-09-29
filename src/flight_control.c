@@ -2,8 +2,8 @@
  * @file flight_control.c
  * @author Alberto Vazquez
  * @brief Cascaded attitude/rate controller with normalized X-frame outputs.
- * @version 1.4.0
- * @date 2026-09-28
+ * @version 1.4.4
+ * @date 2026-09-29
  */
 
 #include <math.h>
@@ -21,17 +21,19 @@
 #define MAX_LEVEL_TILT_RAD              (15.0f * DEG_TO_RAD)
 #define MAX_ESTIMATED_PITCH_RAD        (80.0f * DEG_TO_RAD)
 #define TWO_PI                         (2.0f * M_PI)
+#define DEFAULT_MAX_TILT_DEG            12.0f
 
-/* A nose-up movement must be positive in both pitch feedback signals. */
+/* Convert the installed IMU axes into right-handed airframe body rates. */
 #define AIRFRAME_PITCH_ACCEL_SIGN       (-1.0f)
 #define AIRFRAME_PITCH_GYRO_SIGN        (-1.0f)
+#define AIRFRAME_YAW_GYRO_SIGN          (1.0f)
 
 /* Match transmitter stick directions to positive airframe rotations. */
 #define RECEIVER_ROLL_COMMAND_SIGN      (-1.0f)
 #define RECEIVER_PITCH_COMMAND_SIGN     (-1.0f)
 
 static const FlightControl_Config_t g_default_config = {
-    20.0f,
+    DEFAULT_MAX_TILT_DEG,
     180.0f,
     150.0f,
     3.5f,
@@ -43,7 +45,7 @@ static const FlightControl_Config_t g_default_config = {
     1.00f,
     { 0.0025f, 0.0008f, 0.000010f, 0.08f, 0.28f, 30.0f },
     { 0.0030f, 0.0015f, 0.000012f, 0.14f, 0.32f, 30.0f },
-    { 0.0030f, 0.0005f, 0.000000f, 0.10f, 0.20f, 30.0f }
+    { 0.0030f, 0.0015f, 0.000000f, 0.10f, 0.20f, 30.0f }
 };
 
 static float32_t clampf(float32_t value,
@@ -233,7 +235,8 @@ FlightControl_Status_t FlightControl_Update(
     roll_rate_deg_s = data->filtered_gyro_rad_s.x * RAD_TO_DEG;
     pitch_rate_deg_s = AIRFRAME_PITCH_GYRO_SIGN *
                        data->filtered_gyro_rad_s.y * RAD_TO_DEG;
-    yaw_rate_deg_s = data->filtered_gyro_rad_s.z * RAD_TO_DEG;
+    yaw_rate_deg_s = AIRFRAME_YAW_GYRO_SIGN *
+                     data->filtered_gyro_rad_s.z * RAD_TO_DEG;
 
     (void)update_pid(&data->config.roll_rate,
                      &data->roll_pid,
@@ -479,6 +482,7 @@ static bool update_attitude(FlightControl_Data_t *data,
     float32_t predicted_pitch;
     float32_t roll_rate;
     float32_t body_pitch_rate;
+    float32_t body_yaw_rate;
     float32_t pitch_rate;
     float32_t correction;
     bool accel_trusted;
@@ -524,16 +528,18 @@ static bool update_attitude(FlightControl_Data_t *data,
     {
         body_pitch_rate = AIRFRAME_PITCH_GYRO_SIGN *
                           data->filtered_gyro_rad_s.y;
+        body_yaw_rate = AIRFRAME_YAW_GYRO_SIGN *
+                        data->filtered_gyro_rad_s.z;
         roll_rate = data->filtered_gyro_rad_s.x +
             sinf(data->estimated_roll_rad) *
             tanf(data->estimated_pitch_rad) * body_pitch_rate +
             cosf(data->estimated_roll_rad) *
             tanf(data->estimated_pitch_rad) *
-            data->filtered_gyro_rad_s.z;
+            body_yaw_rate;
         pitch_rate =
             cosf(data->estimated_roll_rad) * body_pitch_rate -
             sinf(data->estimated_roll_rad) *
-            data->filtered_gyro_rad_s.z;
+            body_yaw_rate;
         predicted_roll = wrap_angle(
             data->estimated_roll_rad + (roll_rate * imu->dt_s));
         predicted_pitch = clampf(

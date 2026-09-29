@@ -1,7 +1,7 @@
 # Panel de telemetría en Python para Spyder
 
 `tools/telemetry_dashboard.py` recibe la trama binaria del firmware, muestra
-las 37 señales en tiempo real y permite grabar o exportar los datos a CSV. La
+las 40 señales en tiempo real y permite grabar o exportar los datos a CSV. La
 interfaz usa `tkinter` y gráficas propias, por lo que solo necesita `pyserial`.
 
 ## Instalación en Spyder
@@ -32,17 +32,17 @@ la interfaz, las gráficas y la exportación CSV sin conectar el microcontrolado
 
 ## Contenido de la interfaz
 
-- La vista inicial **IMU cruda · 6 ejes** muestra simultáneamente acelerómetro
-  en m/s² y giroscopio en rad/s. El título incluye **RAW IMU · Schema 2** para
-  distinguir esta versión de una ventana anterior que haya quedado abierta.
+- La vista inicial **Vista general** concentra enlace, campo magnético, actitud,
+  motores y gráficas de control.
+- **Sensores · 9 ejes** muestra acelerómetro, giroscopio y LIS2MDL en µT.
 - Estado del enlace y edad de la última trama.
-- Frecuencia real recibida y secuencia del firmware.
+- Frecuencia real recibida y magnitud del campo magnético.
 - Conteo de saltos de secuencia, huecos de timestamp y resincronizaciones.
 - Indicador de actitud para roll y pitch.
 - Vista superior de los cuatro motores con su pulso en microsegundos.
 - Gráficas de actitud, giroscopio IMU directo, tasas angulares filtradas,
   errores PID, salidas PID, motores, aceleración y términos P/I/D por eje.
-- Tabla con cabecera y las 37 variables enviadas por el firmware.
+- Tabla con cabecera y las 40 variables enviadas por el firmware.
 - Diagnóstico de bytes, tramas, descartes y estado de la grabación.
 
 ## Grabación CSV
@@ -59,8 +59,8 @@ El CSV usa UTF-8, separador coma y punto decimal. Sus columnas son:
 1. Hora ISO del PC.
 2. Tiempo transcurrido desde la conexión.
 3. `sync`, versión, secuencia y timestamp del microcontrolador.
-4. Las 37 señales en el mismo orden de `TELEMETRY.md`, incluidos los seis
-   valores IMU sin filtrado en unidades físicas.
+4. Las 40 señales en el mismo orden de `TELEMETRY.md`, incluidos los seis
+   valores IMU y los tres ejes magnéticos en unidades físicas.
 
 ## Uso para análisis inercial
 
@@ -75,6 +75,11 @@ velocidad o posición es necesario estimar orientación con el giroscopio,
 rotar la aceleración al marco terrestre, retirar gravedad y bias, filtrar y
 solo entonces integrar. Integrar directamente las columnas del acelerómetro
 produce deriva rápidamente, incluso con el dron inmóvil.
+
+`mag_x/y/z` son las componentes calibradas en el marco FRD del dron: X hacia la
+nariz, Y hacia la derecha y Z hacia abajo. El firmware ya retira el offset
+hard-iron y aplica la matriz soft-iron y de orientación. Se repiten normalmente
+en dos filas porque el magnetómetro trabaja a 50 Hz y la telemetría a 100 Hz.
 
 ## Validación del decodificador
 
@@ -95,7 +100,7 @@ del CSV.
 - **Huecos de timestamp:** separación mayor de 15 ms entre snapshots. También
   detecta periodos que el firmware omitió antes de construir una trama.
 - **Bytes descartados:** datos anteriores a la palabra de sincronía.
-- **Candidatos inválidos:** sync encontrada con versión distinta de 2 o valores
+- **Candidatos inválidos:** sync encontrada con versión distinta de 3 o valores
   flotantes no finitos.
 - **Overflow cola PC:** la interfaz no consumió eventos tan rápido como llegaron.
 

@@ -4,8 +4,8 @@
  *
  * @brief System initialization and cooperative flight-sensor scheduler.
  *
- * @version 1.6.0
- * @date 2026-09-28
+ * @version 1.7.0
+ * @date 2026-09-29
  */
 
 #include "functions.h"
@@ -15,6 +15,7 @@
 #include "bmp390l.h"
 #include "flight_control.h"
 #include "lsm6ds.h"
+#include "lis2mdl.h"
 #include "i2c0_drone.h"
 #include "motor_output.h"
 #include "status_led.h"
@@ -24,6 +25,7 @@
 /* The IMU is polled faster than its 416 Hz ODR to minimize ready-detection jitter. */
 #define IMU_POLL_RATE_HZ                1000U
 #define RECEIVER_SERVICE_RATE_HZ        100U
+#define MAGNETOMETER_POLL_RATE_HZ       100U
 #define BAROMETER_SERVICE_PERIOD_MS     80U
 #define ESC_PREPARATION_TIME_MS         3000U
 #define IMU_CALIBRATION_RETRY_DELAY_MS  250U
@@ -46,6 +48,9 @@ RP4TDM_Data_t rp4tdm_data = {0};
  * @brief Barometer calibration and latest compensated measurement.
  */
 BMP390L_Data_t barometer_data;
+
+/** Latest raw and uncalibrated magnetic-field measurement. */
+LIS2MDL_Data_t lis2mdl_data;
 
 /** Flight controller state and normalized motor commands. */
 FlightControl_Data_t flight_control_data;
@@ -78,6 +83,8 @@ volatile LSM6DS_Status_t g_imu_runtime_status =
     LSM6DS_STATUS_NOT_INITIALIZED;
 volatile BMP390L_Status_t g_barometer_runtime_status =
     BMP390L_STATUS_NOT_INITIALIZED;
+volatile LIS2MDL_Status_t g_magnetometer_runtime_status =
+    LIS2MDL_STATUS_NOT_INITIALIZED;
 volatile FlightControl_Status_t g_flight_control_runtime_status =
     FLIGHT_CONTROL_STATUS_NOT_INITIALIZED;
 volatile MotorOutput_Status_t g_motor_output_runtime_status =
@@ -92,6 +99,7 @@ volatile uint32_t g_imu_initialization_retry_count = 0U;
 volatile uint32_t g_imu_poll_missed_periods = 0U;
 volatile uint32_t g_receiver_missed_periods = 0U;
 volatile uint32_t g_barometer_missed_periods = 0U;
+volatile uint32_t g_magnetometer_missed_periods = 0U;
 
 /**
  * @brief Run each device at its own deadline without blocking flight sampling.
@@ -102,9 +110,11 @@ int main(void)
     uint64_t imu_period_cycles;
     uint64_t receiver_period_cycles;
     uint64_t barometer_period_cycles;
+    uint64_t magnetometer_period_cycles;
     uint64_t next_imu_poll;
     uint64_t next_receiver_service;
     uint64_t next_barometer_service;
+    uint64_t next_magnetometer_poll;
     uint64_t now_cycles;
 
     system_clock_hz = config();
@@ -115,11 +125,15 @@ int main(void)
     barometer_period_cycles =
         ((uint64_t)system_clock_hz *
          (uint64_t)BAROMETER_SERVICE_PERIOD_MS) / 1000ULL;
+    magnetometer_period_cycles =
+        (uint64_t)system_clock_hz /
+        (uint64_t)MAGNETOMETER_POLL_RATE_HZ;
 
     now_cycles = Timebase_GetCycles();
     next_imu_poll = now_cycles;
     next_receiver_service = now_cycles;
     next_barometer_service = now_cycles + barometer_period_cycles;
+    next_magnetometer_poll = now_cycles;
 
     while(true)
     {
@@ -163,9 +177,19 @@ int main(void)
                 BMP390L_Update(&barometer_data);
         }
 
+        now_cycles = Timebase_GetCycles();
+        if(schedule_is_due(now_cycles, magnetometer_period_cycles,
+                           &next_magnetometer_poll,
+                           &g_magnetometer_missed_periods))
+        {
+            g_magnetometer_runtime_status =
+                LIS2MDL_Update(&lis2mdl_data);
+        }
+
         g_telemetry_runtime_status = Telemetry_Update(
             &telemetry_data,
             &lsm6ds_data,
+            &lis2mdl_data,
             &flight_control_data,
             &motor_output_data);
     }
@@ -219,6 +243,7 @@ static uint32_t config(void)
     uint32_t esc_start_ms;
     RP4TDM_Status_t receiver_status;
     BMP390L_Status_t barometer_status;
+    LIS2MDL_Status_t magnetometer_status;
     FlightControl_Status_t flight_control_status;
     MotorOutput_Status_t motor_output_status;
     StatusLed_Status_t status_led_status;
@@ -286,6 +311,10 @@ static uint32_t config(void)
 
     barometer_status = BMP390L_Init(&barometer_data);
     g_barometer_runtime_status = barometer_status;
+
+    /* The magnetometer is observational until its readings are validated. */
+    magnetometer_status = LIS2MDL_Init(&lis2mdl_data);
+    g_magnetometer_runtime_status = magnetometer_status;
 
     imu_status = initialize_imu();
     if(imu_status != LSM6DS_STATUS_OK)

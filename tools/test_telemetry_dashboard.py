@@ -33,10 +33,10 @@ def make_frame(sequence: int = 7, timestamp_us: int = 123456) -> bytes:
 
 class TelemetryDecoderTests(unittest.TestCase):
     def test_schema_has_expected_size(self) -> None:
-        self.assertEqual(FRAME_SIZE, 168)
-        self.assertEqual(len(SIGNAL_KEYS), 37)
+        self.assertEqual(FRAME_SIZE, 180)
+        self.assertEqual(len(SIGNAL_KEYS), 40)
         self.assertEqual(
-            SIGNAL_KEYS[1:7],
+            SIGNAL_KEYS[1:10],
             (
                 "accel_x",
                 "accel_y",
@@ -44,6 +44,9 @@ class TelemetryDecoderTests(unittest.TestCase):
                 "imu_gyro_x",
                 "imu_gyro_y",
                 "imu_gyro_z",
+                "mag_x",
+                "mag_y",
+                "mag_z",
             ),
         )
 

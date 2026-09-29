@@ -2,7 +2,7 @@
  * @file telemetry.h
  * @author Alberto Vazquez
  * @brief Non-blocking binary telemetry over the LaunchPad USB virtual COM port.
- * @version 1.1.0
+ * @version 1.3.0
  * @date 2026-09-29
  */
 
@@ -10,6 +10,7 @@
 #define INCLUDE_TELEMETRY_H_
 
 #include "flight_control.h"
+#include "lis2mdl.h"
 #include "lsm6ds.h"
 #include "motor_output.h"
 
@@ -17,9 +18,9 @@
 #define TELEMETRY_DEFAULT_OUTPUT_RATE_HZ  100U
 #define TELEMETRY_TX_BUFFER_SIZE          192U
 #define TELEMETRY_SYNC_WORD               0xA55A3CC3U
-#define TELEMETRY_SCHEMA_VERSION          2U
-#define TELEMETRY_FLIGHT_SIGNAL_COUNT     37U
-#define TELEMETRY_FLIGHT_FRAME_SIZE       168U
+#define TELEMETRY_SCHEMA_VERSION          4U
+#define TELEMETRY_FLIGHT_SIGNAL_COUNT     40U
+#define TELEMETRY_FLIGHT_FRAME_SIZE       180U
 
 typedef enum
 {
@@ -65,6 +66,7 @@ Telemetry_Status_t Telemetry_Init(Telemetry_Data_t *data,
 Telemetry_Status_t Telemetry_Update(
     Telemetry_Data_t *data,
     const LSM6DS_Data_t *imu,
+    const LIS2MDL_Data_t *magnetometer,
     const FlightControl_Data_t *control,
     const MotorOutput_Data_t *motor_output);
 

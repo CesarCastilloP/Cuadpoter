@@ -2,7 +2,7 @@
  * @file telemetry.c
  * @author Alberto Vazquez
  * @brief Fixed-rate binary telemetry with non-blocking UART transmission.
- * @version 1.1.0
+ * @version 1.3.0
  * @date 2026-09-29
  */
 
@@ -27,6 +27,7 @@ static void account_due_periods(Telemetry_Data_t *data,
 static bool create_flight_frame(Telemetry_Data_t *data,
                                 uint64_t now_us,
                                 const LSM6DS_Data_t *imu,
+                                const LIS2MDL_Data_t *magnetometer,
                                 const FlightControl_Data_t *control,
                                 const MotorOutput_Data_t *motor_output);
 static void writer_initialize(FrameWriter_t *writer,
@@ -82,13 +83,14 @@ Telemetry_Status_t Telemetry_Init(Telemetry_Data_t *data,
 Telemetry_Status_t Telemetry_Update(
     Telemetry_Data_t *data,
     const LSM6DS_Data_t *imu,
+    const LIS2MDL_Data_t *magnetometer,
     const FlightControl_Data_t *control,
     const MotorOutput_Data_t *motor_output)
 {
     uint64_t now_us;
 
-    if((data == NULL) || (imu == NULL) || (control == NULL) ||
-       (motor_output == NULL))
+    if((data == NULL) || (imu == NULL) || (magnetometer == NULL) ||
+       (control == NULL) || (motor_output == NULL))
     {
         return TELEMETRY_STATUS_INVALID_ARGUMENT;
     }
@@ -112,7 +114,8 @@ Telemetry_Status_t Telemetry_Update(
     }
 
     account_due_periods(data, now_us, true);
-    if(!create_flight_frame(data, now_us, imu, control, motor_output))
+    if(!create_flight_frame(data, now_us, imu, magnetometer,
+                            control, motor_output))
     {
         data->encoding_error_count++;
         data->last_status = TELEMETRY_STATUS_ENCODING_ERROR;
@@ -170,11 +173,13 @@ static void account_due_periods(Telemetry_Data_t *data,
 static bool create_flight_frame(Telemetry_Data_t *data,
                                 uint64_t now_us,
                                 const LSM6DS_Data_t *imu,
+                                const LIS2MDL_Data_t *magnetometer,
                                 const FlightControl_Data_t *control,
                                 const MotorOutput_Data_t *motor_output)
 {
     FrameWriter_t writer;
     const LSM6DS_Sample_t *sample = &imu->sample;
+    const LIS2MDL_Sample_t *magnetic_sample = &magnetometer->sample;
     const FlightControl_Output_t *fc = &control->output;
 
     writer_initialize(&writer, data->tx_buffer, TELEMETRY_TX_BUFFER_SIZE);
@@ -190,6 +195,9 @@ static bool create_flight_frame(Telemetry_Data_t *data,
     writer_float32(&writer, sample->gyro_rad_s.x);
     writer_float32(&writer, sample->gyro_rad_s.y);
     writer_float32(&writer, sample->gyro_rad_s.z);
+    writer_float32(&writer, magnetic_sample->body_field_ut.x);
+    writer_float32(&writer, magnetic_sample->body_field_ut.y);
+    writer_float32(&writer, magnetic_sample->body_field_ut.z);
     writer_float32(&writer, fc->roll.measured_deg_s);
     writer_float32(&writer, fc->pitch.measured_deg_s);
     writer_float32(&writer, fc->yaw.measured_deg_s);

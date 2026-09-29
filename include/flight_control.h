@@ -2,8 +2,8 @@
  * @file flight_control.h
  * @author Alberto Vazquez
  * @brief Cascaded attitude and angular-rate control for an X quadcopter.
- * @version 1.4.0
- * @date 2026-09-28
+ * @version 1.4.4
+ * @date 2026-09-29
  */
 
 #ifndef INCLUDE_FLIGHT_CONTROL_H_

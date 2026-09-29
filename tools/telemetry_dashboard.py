@@ -1,6 +1,6 @@
-"""Professional real-time dashboard for MCU_Cuadcopter USB telemetry.
+"""Real-time flight telemetry dashboard for MCU_Cuadcopter.
 
-The application decodes schema 2 emitted by ``src/telemetry.c``.  It uses a
+The application decodes schema 4 emitted by ``src/telemetry.c``.  It uses a
 background thread for the serial port and keeps every Tk operation in the main
 thread.  The plots are drawn with Tk Canvas so Spyder only needs ``pyserial``;
 NumPy, Matplotlib and Qt are intentionally not required.
@@ -35,19 +35,19 @@ except ModuleNotFoundError:  # The demo and decoder remain usable without it.
     list_ports = None
 
 
-APP_TITLE = "MCU Cuadcopter · RAW IMU · Schema 2"
+APP_TITLE = "MCU Cuadcopter · Telemetría de vuelo"
 DEFAULT_BAUD_RATE = 460_800
 EXPECTED_OUTPUT_RATE_HZ = 100.0
 SYNC_WORD = 0xA55A3CC3
 SYNC_BYTES = struct.pack("<I", SYNC_WORD)
-SCHEMA_VERSION = 2
-FRAME_STRUCT = struct.Struct("<IIIQ37f")
+SCHEMA_VERSION = 4
+FRAME_STRUCT = struct.Struct("<IIIQ40f")
 FRAME_SIZE = FRAME_STRUCT.size
 MAX_HISTORY_SAMPLES = 12_000
 SERIAL_READ_TIMEOUT_S = 0.050
 LINK_TIMEOUT_S = 0.500
 
-if FRAME_SIZE != 168:
+if FRAME_SIZE != 180:
     raise RuntimeError(f"Unexpected telemetry frame size: {FRAME_SIZE}")
 
 
@@ -97,6 +97,9 @@ SIGNALS: Tuple[SignalDefinition, ...] = (
     SignalDefinition("imu_gyro_x", "Giroscopio IMU X", "rad/s", "IMU", 5),
     SignalDefinition("imu_gyro_y", "Giroscopio IMU Y", "rad/s", "IMU", 5),
     SignalDefinition("imu_gyro_z", "Giroscopio IMU Z", "rad/s", "IMU", 5),
+    SignalDefinition("mag_x", "Campo magnético X (nariz)", "µT", "Magnetómetro"),
+    SignalDefinition("mag_y", "Campo magnético Y (derecha)", "µT", "Magnetómetro"),
+    SignalDefinition("mag_z", "Campo magnético Z (abajo)", "µT", "Magnetómetro"),
     SignalDefinition("roll_rate_measured", "Rate roll medido", "°/s", "Tasas"),
     SignalDefinition("pitch_rate_measured", "Rate pitch medido", "°/s", "Tasas"),
     SignalDefinition("yaw_rate_measured", "Rate yaw medido", "°/s", "Tasas"),
@@ -135,7 +138,7 @@ SIGNAL_BY_KEY = {signal.key: signal for signal in SIGNALS}
 
 @dataclass(frozen=True)
 class TelemetryFrame:
-    """One completely decoded schema-2 frame."""
+    """One completely decoded schema-3 frame."""
 
     sync: int
     schema_version: int
@@ -507,6 +510,10 @@ class DemoReader(threading.Thread):
         imu_gyro_x = math.radians(roll_rate) + 0.01 * math.sin(elapsed * 3.1)
         imu_gyro_y = math.radians(pitch_rate) + 0.01 * math.cos(elapsed * 2.7)
         imu_gyro_z = math.radians(yaw_rate) + 0.008 * math.sin(elapsed * 2.3)
+        magnetic_heading = elapsed * 0.18
+        mag_x = 42.0 * math.cos(magnetic_heading) + 4.0
+        mag_y = 42.0 * math.sin(magnetic_heading) - 7.0
+        mag_z = -31.0 + 1.5 * math.sin(elapsed * 0.11)
 
         values = (
             1.0 / 416.0,
@@ -516,6 +523,9 @@ class DemoReader(threading.Thread):
             imu_gyro_x,
             imu_gyro_y,
             imu_gyro_z,
+            mag_x,
+            mag_y,
+            mag_z,
             roll_rate,
             pitch_rate,
             yaw_rate,
@@ -1015,17 +1025,6 @@ class TelemetryDashboard(tk.Tk):
             (-30.0, 30.0),
         ),
         (
-            "Giroscopio IMU",
-            "Giroscopio directo sin low-pass del controlador",
-            "rad/s",
-            (
-                PlotSeries("imu_gyro_x", "X", SERIES_COLORS[0]),
-                PlotSeries("imu_gyro_y", "Y", SERIES_COLORS[1]),
-                PlotSeries("imu_gyro_z", "Z", SERIES_COLORS[2]),
-            ),
-            None,
-        ),
-        (
             "Tasas",
             "Velocidad angular medida y consignas",
             "°/s",
@@ -1072,17 +1071,6 @@ class TelemetryDashboard(tk.Tk):
                 PlotSeries("motor_rear_left", "RL", SERIES_COLORS[3]),
             ),
             (950.0, 2050.0),
-        ),
-        (
-            "Aceleración",
-            "Acelerómetro de la IMU",
-            "m/s²",
-            (
-                PlotSeries("accel_x", "X", SERIES_COLORS[0]),
-                PlotSeries("accel_y", "Y", SERIES_COLORS[1]),
-                PlotSeries("accel_z", "Z", SERIES_COLORS[2]),
-            ),
-            None,
         ),
         (
             "Términos roll",
@@ -1260,14 +1248,14 @@ class TelemetryDashboard(tk.Tk):
         title_block.pack(side="left")
         tk.Label(
             title_block,
-            text="MCU CUADCOPTER",
+            text="MCU CUADCOPTER · TM4C1294NCPDT",
             bg=COLORS["surface"],
             fg=COLORS["cyan"],
             font=("Segoe UI", 9, "bold"),
         ).pack(anchor="w")
         tk.Label(
             title_block,
-            text="Flight Control Telemetry · RAW IMU (6 ejes) · Schema 2",
+            text="Telemetría de vuelo",
             bg=COLORS["surface"],
             fg=COLORS["text"],
             font=("Segoe UI Semibold", 18),
@@ -1300,8 +1288,9 @@ class TelemetryDashboard(tk.Tk):
         self.baud_combo = ttk.Combobox(
             connection,
             textvariable=self.baud_variable,
-            values=("115200", "230400", "460800", "921600"),
-            width=10,
+            values=(str(DEFAULT_BAUD_RATE),),
+            state="readonly",
+            width=9,
         )
         self.baud_combo.grid(row=0, column=4, padx=4)
         self.connect_button = ttk.Button(
@@ -1326,7 +1315,7 @@ class TelemetryDashboard(tk.Tk):
 
         self.link_card = MetricCard(metrics, "Enlace", COLORS["red"])
         self.rate_card = MetricCard(metrics, "Tramas", COLORS["cyan"])
-        self.sequence_card = MetricCard(metrics, "Secuencia", COLORS["blue"])
+        self.magnetic_card = MetricCard(metrics, "Campo magnético", COLORS["blue"])
         self.loss_card = MetricCard(metrics, "Pérdidas", COLORS["amber"])
         self.control_card = MetricCard(metrics, "Motores", COLORS["green"])
         self.record_card = MetricCard(metrics, "Grabación", COLORS["purple"])
@@ -1334,7 +1323,7 @@ class TelemetryDashboard(tk.Tk):
             (
                 self.link_card,
                 self.rate_card,
-                self.sequence_card,
+                self.magnetic_card,
                 self.loss_card,
                 self.control_card,
                 self.record_card,
@@ -1383,18 +1372,18 @@ class TelemetryDashboard(tk.Tk):
 
         notebook = ttk.Notebook(body)
         notebook.pack(fill="both", expand=True)
-        raw_imu_tab = ttk.Frame(notebook, style="TFrame")
         dashboard_tab = ttk.Frame(notebook, style="TFrame")
+        sensors_tab = ttk.Frame(notebook, style="TFrame")
         values_tab = ttk.Frame(notebook, style="TFrame")
         diagnostics_tab = ttk.Frame(notebook, style="TFrame")
-        notebook.add(raw_imu_tab, text="IMU cruda · 6 ejes")
-        notebook.add(dashboard_tab, text="Panel de vuelo")
-        notebook.add(values_tab, text="Todas las variables")
-        notebook.add(diagnostics_tab, text="Diagnóstico y protocolo")
+        notebook.add(dashboard_tab, text="Vista general")
+        notebook.add(sensors_tab, text="Sensores · 9 ejes")
+        notebook.add(values_tab, text="Datos completos")
+        notebook.add(diagnostics_tab, text="Diagnóstico")
 
-        self.raw_imu_plots: List[Tuple[LivePlot, Tuple[str, ...]]] = []
+        self.sensor_plots: List[Tuple[LivePlot, Tuple[str, ...]]] = []
         self.plots: List[Tuple[LivePlot, Tuple[str, ...]]] = []
-        self._build_raw_imu_tab(raw_imu_tab)
+        self._build_sensor_tab(sensors_tab)
 
         dashboard_tab.columnconfigure(0, weight=0, minsize=325)
         dashboard_tab.columnconfigure(1, weight=1)
@@ -1451,10 +1440,11 @@ class TelemetryDashboard(tk.Tk):
             font=("Segoe UI", 8),
         ).pack(side="right")
 
-    def _build_raw_imu_tab(self, parent: ttk.Frame) -> None:
-        """Build the default view for the six direct IMU measurements."""
+    def _build_sensor_tab(self, parent: ttk.Frame) -> None:
+        """Build a compact view of the nine directly measured sensor axes."""
 
         parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
         parent.rowconfigure(0, weight=1)
         parent.rowconfigure(1, weight=1)
 
@@ -1467,6 +1457,9 @@ class TelemetryDashboard(tk.Tk):
                     PlotSeries("accel_y", "Y", SERIES_COLORS[1]),
                     PlotSeries("accel_z", "Z", SERIES_COLORS[2]),
                 ),
+                0,
+                0,
+                1,
             ),
             (
                 "Giroscopio directo de la IMU (sin low-pass del controlador)",
@@ -1476,10 +1469,25 @@ class TelemetryDashboard(tk.Tk):
                     PlotSeries("imu_gyro_y", "Y", SERIES_COLORS[1]),
                     PlotSeries("imu_gyro_z", "Z", SERIES_COLORS[2]),
                 ),
+                0,
+                1,
+                1,
+            ),
+            (
+                "Magnetómetro LIS2MDL calibrado · cuerpo FRD",
+                "µT",
+                (
+                    PlotSeries("mag_x", "X", SERIES_COLORS[0]),
+                    PlotSeries("mag_y", "Y", SERIES_COLORS[1]),
+                    PlotSeries("mag_z", "Z", SERIES_COLORS[2]),
+                ),
+                1,
+                0,
+                2,
             ),
         )
 
-        for row, (title, unit, series) in enumerate(configurations):
+        for title, unit, series, row, column, columnspan in configurations:
             plot = LivePlot(
                 parent,
                 title=title,
@@ -1487,8 +1495,15 @@ class TelemetryDashboard(tk.Tk):
                 series=series,
                 fixed_limits=None,
             )
-            plot.grid(row=row, column=0, sticky="nsew", padx=8, pady=4)
-            self.raw_imu_plots.append((plot, tuple(item.key for item in series)))
+            plot.grid(
+                row=row,
+                column=column,
+                columnspan=columnspan,
+                sticky="nsew",
+                padx=6,
+                pady=5,
+            )
+            self.sensor_plots.append((plot, tuple(item.key for item in series)))
 
     def _build_values_tab(self, parent: ttk.Frame) -> None:
         container = ttk.Frame(parent, padding=10)
@@ -1604,18 +1619,18 @@ class TelemetryDashboard(tk.Tk):
         protocol_text = (
             "UART0 · PA1 TX · USB VCOM\n"
             "460800 baud · 8N1 · sin flow control\n\n"
-            "Frame fijo: 168 bytes\n"
+            "Frame fijo: 180 bytes\n"
             "0..3    sync = C3 3C 5A A5\n"
-            "4..7    schema_version = 2\n"
+            f"4..7    schema_version = {SCHEMA_VERSION}\n"
             "8..11   sequence (U32)\n"
             "12..19  timestamp_us (U64)\n"
-            "20..167 37 × float32 IEEE-754\n\n"
+            "20..179 40 × float32 IEEE-754\n\n"
             "La trama no contiene CRC ni banderas de validez. El receptor "
             "busca la palabra sync y verifica la versión. Un salto de sequence "
             "indica pérdida de una trama ya creada; un salto de timestamp también "
             "puede revelar snapshots omitidos dentro del firmware.\n\n"
             "CSV: UTF-8, separador coma, punto decimal. Incluye hora del PC, "
-            "tiempo transcurrido, cabecera completa y las 37 señales."
+            "tiempo transcurrido, cabecera completa y las 40 señales."
         )
         tk.Label(
             right,
@@ -1826,12 +1841,12 @@ class TelemetryDashboard(tk.Tk):
             if incompatible_frame:
                 self.link_card.set(
                     "TRAMA INCOMPATIBLE",
-                    "Grabe firmware Schema 2",
+                    f"Grabe firmware Schema {SCHEMA_VERSION}",
                     COLORS["red"],
                 )
                 self.status_dot.configure(fg=COLORS["red"])
                 self.status_variable.set(
-                    "Llegan bytes por UART, pero no corresponden a Schema 2 / 168 bytes."
+                    f"Llegan bytes por UART, pero no corresponden a Schema {SCHEMA_VERSION} / {FRAME_SIZE} bytes."
                 )
             else:
                 self.link_card.set("SIN DATOS", self.current_source, COLORS["amber"])
@@ -1844,8 +1859,17 @@ class TelemetryDashboard(tk.Tk):
             f"esperado {EXPECTED_OUTPUT_RATE_HZ:.0f} Hz",
             COLORS["green"] if 90.0 <= measured_rate <= 110.0 else COLORS["amber"],
         )
-        sequence = self.latest_frame.sequence if self.latest_frame else 0
-        self.sequence_card.set(f"{sequence:,}", f"{self.received_frames:,} recibidas")
+        mag_x = self.latest_values.get("mag_x", 0.0)
+        mag_y = self.latest_values.get("mag_y", 0.0)
+        mag_z = self.latest_values.get("mag_z", 0.0)
+        magnetic_norm = math.sqrt((mag_x * mag_x) +
+                                  (mag_y * mag_y) +
+                                  (mag_z * mag_z))
+        self.magnetic_card.set(
+            f"{magnetic_norm:5.1f} µT",
+            f"X {mag_x:+.1f} · Y {mag_y:+.1f} · Z {mag_z:+.1f}",
+            COLORS["green"] if 15.0 <= magnetic_norm <= 120.0 else COLORS["amber"],
+        )
         total_issues = self.lost_frames + self.timestamp_gap_count
         self.loss_card.set(
             str(total_issues),
@@ -1917,11 +1941,13 @@ class TelemetryDashboard(tk.Tk):
             window_s = float(self.window_variable.get())
         except ValueError:
             window_s = 10.0
-        # The two raw-IMU plots are the default analysis view. The flight
-        # panel still redraws only its selected plot to keep the UI responsive.
-        for raw_plot, raw_keys in self.raw_imu_plots:
-            raw_times, raw_values = self.history.plot_data(raw_keys, window_s)
-            raw_plot.set_data(raw_times, raw_values)
+        # Sensor plots remain ready when their tab is selected. The overview
+        # redraws only its active chart to keep the UI responsive.
+        for sensor_plot, sensor_keys in self.sensor_plots:
+            sensor_times, sensor_values = self.history.plot_data(
+                sensor_keys, window_s
+            )
+            sensor_plot.set_data(sensor_times, sensor_values)
 
         selected_index = self.plot_notebook.index("current")
         plot, keys = self.plots[selected_index]
