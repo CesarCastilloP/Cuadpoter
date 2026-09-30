@@ -1,6 +1,6 @@
 """Real-time flight telemetry dashboard for MCU_Cuadcopter.
 
-The application decodes schema 4 emitted by ``src/telemetry.c``.  It uses a
+The application decodes schema 5 emitted by ``src/telemetry.c``.  It uses a
 background thread for the serial port and keeps every Tk operation in the main
 thread.  The plots are drawn with Tk Canvas so Spyder only needs ``pyserial``;
 NumPy, Matplotlib and Qt are intentionally not required.
@@ -40,14 +40,14 @@ DEFAULT_BAUD_RATE = 460_800
 EXPECTED_OUTPUT_RATE_HZ = 100.0
 SYNC_WORD = 0xA55A3CC3
 SYNC_BYTES = struct.pack("<I", SYNC_WORD)
-SCHEMA_VERSION = 4
-FRAME_STRUCT = struct.Struct("<IIIQ40f")
+SCHEMA_VERSION = 5
+FRAME_STRUCT = struct.Struct("<IIIQ43f")
 FRAME_SIZE = FRAME_STRUCT.size
 MAX_HISTORY_SAMPLES = 12_000
 SERIAL_READ_TIMEOUT_S = 0.050
 LINK_TIMEOUT_S = 0.500
 
-if FRAME_SIZE != 180:
+if FRAME_SIZE != 192:
     raise RuntimeError(f"Unexpected telemetry frame size: {FRAME_SIZE}")
 
 
@@ -100,6 +100,9 @@ SIGNALS: Tuple[SignalDefinition, ...] = (
     SignalDefinition("mag_x", "Campo magnético X (nariz)", "µT", "Magnetómetro"),
     SignalDefinition("mag_y", "Campo magnético Y (derecha)", "µT", "Magnetómetro"),
     SignalDefinition("mag_z", "Campo magnético Z (abajo)", "µT", "Magnetómetro"),
+    SignalDefinition("heading", "Heading magnético", "°", "Heading"),
+    SignalDefinition("heading_setpoint", "Setpoint heading", "°", "Heading"),
+    SignalDefinition("heading_error", "Error heading", "°", "Heading"),
     SignalDefinition("roll_rate_measured", "Rate roll medido", "°/s", "Tasas"),
     SignalDefinition("pitch_rate_measured", "Rate pitch medido", "°/s", "Tasas"),
     SignalDefinition("yaw_rate_measured", "Rate yaw medido", "°/s", "Tasas"),
@@ -138,7 +141,7 @@ SIGNAL_BY_KEY = {signal.key: signal for signal in SIGNALS}
 
 @dataclass(frozen=True)
 class TelemetryFrame:
-    """One completely decoded schema-3 frame."""
+    """One completely decoded frame."""
 
     sync: int
     schema_version: int
@@ -511,9 +514,12 @@ class DemoReader(threading.Thread):
         imu_gyro_y = math.radians(pitch_rate) + 0.01 * math.cos(elapsed * 2.7)
         imu_gyro_z = math.radians(yaw_rate) + 0.008 * math.sin(elapsed * 2.3)
         magnetic_heading = elapsed * 0.18
-        mag_x = 42.0 * math.cos(magnetic_heading) + 4.0
-        mag_y = 42.0 * math.sin(magnetic_heading) - 7.0
-        mag_z = -31.0 + 1.5 * math.sin(elapsed * 0.11)
+        mag_x = 30.0 * math.cos(magnetic_heading)
+        mag_y = -30.0 * math.sin(magnetic_heading)
+        mag_z = 20.0 + 0.5 * math.sin(elapsed * 0.11)
+        heading = ((math.degrees(magnetic_heading) + 180.0) % 360.0) - 180.0
+        heading_setpoint = ((heading + 8.0 * math.sin(elapsed * 0.10) + 180.0) % 360.0) - 180.0
+        heading_error = ((heading_setpoint - heading + 180.0) % 360.0) - 180.0
 
         values = (
             1.0 / 416.0,
@@ -526,6 +532,9 @@ class DemoReader(threading.Thread):
             mag_x,
             mag_y,
             mag_z,
+            heading,
+            heading_setpoint,
+            heading_error,
             roll_rate,
             pitch_rate,
             yaw_rate,
@@ -1023,6 +1032,17 @@ class TelemetryDashboard(tk.Tk):
                 PlotSeries("pitch_angle_setpoint", "Pitch SP", SERIES_COLORS[3]),
             ),
             (-30.0, 30.0),
+        ),
+        (
+            "Heading",
+            "Heading magnético y referencia de yaw",
+            "grados",
+            (
+                PlotSeries("heading", "Heading", SERIES_COLORS[0]),
+                PlotSeries("heading_setpoint", "Referencia", SERIES_COLORS[1]),
+                PlotSeries("heading_error", "Error", SERIES_COLORS[4]),
+            ),
+            (-180.0, 180.0),
         ),
         (
             "Tasas",
@@ -1619,18 +1639,18 @@ class TelemetryDashboard(tk.Tk):
         protocol_text = (
             "UART0 · PA1 TX · USB VCOM\n"
             "460800 baud · 8N1 · sin flow control\n\n"
-            "Frame fijo: 180 bytes\n"
+            f"Frame fijo: {FRAME_SIZE} bytes\n"
             "0..3    sync = C3 3C 5A A5\n"
             f"4..7    schema_version = {SCHEMA_VERSION}\n"
             "8..11   sequence (U32)\n"
             "12..19  timestamp_us (U64)\n"
-            "20..179 40 × float32 IEEE-754\n\n"
+            f"20..{FRAME_SIZE - 1} {len(SIGNALS)} × float32 IEEE-754\n\n"
             "La trama no contiene CRC ni banderas de validez. El receptor "
             "busca la palabra sync y verifica la versión. Un salto de sequence "
             "indica pérdida de una trama ya creada; un salto de timestamp también "
             "puede revelar snapshots omitidos dentro del firmware.\n\n"
             "CSV: UTF-8, separador coma, punto decimal. Incluye hora del PC, "
-            "tiempo transcurrido, cabecera completa y las 40 señales."
+            f"tiempo transcurrido, cabecera completa y las {len(SIGNALS)} señales."
         )
         tk.Label(
             right,

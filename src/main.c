@@ -49,7 +49,7 @@ RP4TDM_Data_t rp4tdm_data = {0};
  */
 BMP390L_Data_t barometer_data;
 
-/** Latest raw and uncalibrated magnetic-field measurement. */
+/** Latest raw, calibrated, and airframe-mapped magnetic measurement. */
 LIS2MDL_Data_t lis2mdl_data;
 
 /** Flight controller state and normalized motor commands. */
@@ -150,6 +150,7 @@ int main(void)
                 &flight_control_data,
                 g_imu_runtime_status,
                 &lsm6ds_data.sample,
+                &lis2mdl_data,
                 &rp4tdm_data.controls);
             g_motor_output_runtime_status = MotorOutput_Update(
                 &motor_output_data,
@@ -312,7 +313,7 @@ static uint32_t config(void)
     barometer_status = BMP390L_Init(&barometer_data);
     g_barometer_runtime_status = barometer_status;
 
-    /* The magnetometer is observational until its readings are validated. */
+    /* Magnetic heading is optional: invalid data falls back to yaw-rate mode. */
     magnetometer_status = LIS2MDL_Init(&lis2mdl_data);
     g_magnetometer_runtime_status = magnetometer_status;
 

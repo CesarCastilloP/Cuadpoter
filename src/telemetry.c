@@ -2,7 +2,7 @@
  * @file telemetry.c
  * @author Alberto Vazquez
  * @brief Fixed-rate binary telemetry with non-blocking UART transmission.
- * @version 1.3.0
+ * @version 1.4.0
  * @date 2026-09-29
  */
 
@@ -198,6 +198,9 @@ static bool create_flight_frame(Telemetry_Data_t *data,
     writer_float32(&writer, magnetic_sample->body_field_ut.x);
     writer_float32(&writer, magnetic_sample->body_field_ut.y);
     writer_float32(&writer, magnetic_sample->body_field_ut.z);
+    writer_float32(&writer, fc->heading.heading_deg);
+    writer_float32(&writer, fc->heading.setpoint_deg);
+    writer_float32(&writer, fc->heading.error_deg);
     writer_float32(&writer, fc->roll.measured_deg_s);
     writer_float32(&writer, fc->pitch.measured_deg_s);
     writer_float32(&writer, fc->yaw.measured_deg_s);

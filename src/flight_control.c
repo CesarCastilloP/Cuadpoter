@@ -2,7 +2,7 @@
  * @file flight_control.c
  * @author Alberto Vazquez
  * @brief Cascaded attitude/rate controller with normalized X-frame outputs.
- * @version 1.4.4
+ * @version 1.5.0
  * @date 2026-09-29
  */
 
@@ -32,11 +32,17 @@
 #define RECEIVER_ROLL_COMMAND_SIGN      (-1.0f)
 #define RECEIVER_PITCH_COMMAND_SIGN     (-1.0f)
 
+/* Magnetic heading increases clockwise; the proven yaw-rate loop uses the
+ * opposite sign. Keep the conversion at this cascade boundary. */
+#define HEADING_ERROR_TO_YAW_RATE_SIGN  (-1.0f)
+
 static const FlightControl_Config_t g_default_config = {
     DEFAULT_MAX_TILT_DEG,
     180.0f,
     150.0f,
     3.5f,
+    2.0f,
+    45.0f,
     0.03f,
     0.05f,
     0.35f,
@@ -70,6 +76,8 @@ static void update_rate_filter(FlightControl_Data_t *data,
                                const LSM6DS_Sample_t *imu);
 static bool update_attitude(FlightControl_Data_t *data,
                             const LSM6DS_Sample_t *imu);
+static void update_yaw_setpoint(FlightControl_Data_t *data,
+                                float32_t yaw_command);
 static float32_t update_pid(const FlightControl_PIDConfig_t *config,
                             FlightControl_PIDState_t *state,
                             float32_t setpoint_deg_s,
@@ -90,6 +98,7 @@ FlightControl_Status_t FlightControl_Init(
     float32_t level_roll_rad;
     float32_t level_pitch_rad;
     float32_t upright_accel_z_sign;
+    MagHeading_Status_t heading_status;
 
     if(data == NULL)
     {
@@ -126,6 +135,11 @@ FlightControl_Status_t FlightControl_Init(
 
     memset(data, 0, sizeof(*data));
     data->config = *selected_config;
+    heading_status = MagHeading_Init(&data->heading_estimator, NULL);
+    if(heading_status != MAG_HEADING_STATUS_OK)
+    {
+        return FLIGHT_CONTROL_STATUS_INVALID_CONFIG;
+    }
     data->upright_accel_z_sign = upright_accel_z_sign;
     data->filtered_accel_mps2 = *level_accel_mps2;
     data->accel_filter_initialized = true;
@@ -145,6 +159,7 @@ FlightControl_Status_t FlightControl_Update(
     FlightControl_Data_t *data,
     LSM6DS_Status_t imu_status,
     const LSM6DS_Sample_t *imu,
+    const LIS2MDL_Data_t *magnetometer,
     const RP4TDM_Controls_t *receiver)
 {
     float32_t roll_command;
@@ -154,7 +169,8 @@ FlightControl_Status_t FlightControl_Update(
     float32_t pitch_rate_deg_s;
     float32_t yaw_rate_deg_s;
 
-    if((data == NULL) || (imu == NULL) || (receiver == NULL))
+    if((data == NULL) || (imu == NULL) || (magnetometer == NULL) ||
+       (receiver == NULL))
     {
         return FLIGHT_CONTROL_STATUS_INVALID_ARGUMENT;
     }
@@ -183,6 +199,17 @@ FlightControl_Status_t FlightControl_Update(
     {
         return disable_control(data, FLIGHT_CONTROL_STATUS_INVALID_IMU);
     }
+
+    (void)MagHeading_Update(
+        &data->heading_estimator,
+        magnetometer,
+        data->output.attitude.roll_deg,
+        data->output.attitude.pitch_deg,
+        imu->timestamp_us);
+    data->output.heading.heading_deg =
+        data->heading_estimator.output.heading_deg;
+    data->output.heading.valid =
+        data->heading_estimator.output.valid;
 
     if(!receiver->valid)
     {
@@ -215,8 +242,7 @@ FlightControl_Status_t FlightControl_Update(
          data->output.attitude.pitch_deg),
         -data->config.max_roll_pitch_rate_deg_s,
         data->config.max_roll_pitch_rate_deg_s);
-    data->output.setpoint.yaw_rate_deg_s =
-        yaw_command * data->config.max_yaw_rate_deg_s;
+    update_yaw_setpoint(data, yaw_command);
     data->output.valid = true;
 
     if(data->output.setpoint.throttle <=
@@ -333,6 +359,12 @@ static bool config_is_valid(const FlightControl_Config_t *config)
            isfinite(config->max_yaw_rate_deg_s) &&
            (config->max_yaw_rate_deg_s > 0.0f) &&
            isfinite(config->angle_kp) && (config->angle_kp > 0.0f) &&
+           isfinite(config->yaw_heading_kp) &&
+           (config->yaw_heading_kp > 0.0f) &&
+           isfinite(config->max_yaw_heading_correction_deg_s) &&
+           (config->max_yaw_heading_correction_deg_s > 0.0f) &&
+           (config->max_yaw_heading_correction_deg_s <=
+            config->max_yaw_rate_deg_s) &&
            isfinite(config->stick_deadband) &&
            (config->stick_deadband >= 0.0f) &&
            (config->stick_deadband < 0.25f) &&
@@ -401,6 +433,9 @@ static void zero_actuation(FlightControl_Data_t *data)
 static void zero_commands_and_actuation(FlightControl_Data_t *data)
 {
     memset(&data->output.setpoint, 0, sizeof(data->output.setpoint));
+    data->output.heading.error_deg = 0.0f;
+    data->output.heading.hold_active = false;
+    data->heading_setpoint_initialized = false;
     zero_actuation(data);
     data->output.valid = false;
 }
@@ -571,6 +606,62 @@ static bool update_attitude(FlightControl_Data_t *data,
         data->estimated_pitch_rad * RAD_TO_DEG;
     data->output.attitude.valid = true;
     return true;
+}
+
+/**
+ * Preserve the proven inner yaw-rate PID and add magnetic heading as an outer
+ * loop. Moving the yaw stick keeps direct rate control; releasing it captures
+ * and holds the current heading. Invalid magnetic data falls back to rate mode.
+ */
+static void update_yaw_setpoint(FlightControl_Data_t *data,
+                                float32_t yaw_command)
+{
+    float32_t current_heading_rad;
+    float32_t heading_error_rad;
+    float32_t heading_error_deg;
+
+    if(!data->output.heading.valid)
+    {
+        data->heading_setpoint_initialized = false;
+        data->output.heading.setpoint_deg =
+            data->output.heading.heading_deg;
+        data->output.heading.error_deg = 0.0f;
+        data->output.heading.hold_active = false;
+        data->output.setpoint.yaw_rate_deg_s =
+            yaw_command * data->config.max_yaw_rate_deg_s;
+        return;
+    }
+
+    current_heading_rad =
+        data->output.heading.heading_deg * DEG_TO_RAD;
+    if((data->output.setpoint.throttle <=
+        data->config.minimum_control_throttle) ||
+       (yaw_command != 0.0f) ||
+       !data->heading_setpoint_initialized)
+    {
+        data->heading_setpoint_rad = current_heading_rad;
+        data->heading_setpoint_initialized = true;
+        data->output.heading.setpoint_deg =
+            data->output.heading.heading_deg;
+        data->output.heading.error_deg = 0.0f;
+        data->output.heading.hold_active = false;
+        data->output.setpoint.yaw_rate_deg_s =
+            yaw_command * data->config.max_yaw_rate_deg_s;
+        return;
+    }
+
+    heading_error_rad = wrap_angle(
+        data->heading_setpoint_rad - current_heading_rad);
+    heading_error_deg = heading_error_rad * RAD_TO_DEG;
+    data->output.heading.setpoint_deg =
+        data->heading_setpoint_rad * RAD_TO_DEG;
+    data->output.heading.error_deg = heading_error_deg;
+    data->output.heading.hold_active = true;
+    data->output.setpoint.yaw_rate_deg_s = clampf(
+        HEADING_ERROR_TO_YAW_RATE_SIGN *
+        data->config.yaw_heading_kp * heading_error_deg,
+        -data->config.max_yaw_heading_correction_deg_s,
+        data->config.max_yaw_heading_correction_deg_s);
 }
 
 static float32_t update_pid(const FlightControl_PIDConfig_t *config,

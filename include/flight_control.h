@@ -2,7 +2,7 @@
  * @file flight_control.h
  * @author Alberto Vazquez
  * @brief Cascaded attitude and angular-rate control for an X quadcopter.
- * @version 1.4.4
+ * @version 1.5.0
  * @date 2026-09-29
  */
 
@@ -10,6 +10,7 @@
 #define INCLUDE_FLIGHT_CONTROL_H_
 
 #include "lsm6ds.h"
+#include "mag_heading.h"
 #include "rp4tdm.h"
 
 typedef enum
@@ -42,6 +43,9 @@ typedef struct
     float32_t max_roll_pitch_rate_deg_s;
     float32_t max_yaw_rate_deg_s;
     float32_t angle_kp;
+    /** Outer magnetic-heading loop gain in deg/s per degree of yaw error. */
+    float32_t yaw_heading_kp;
+    float32_t max_yaw_heading_correction_deg_s;
     float32_t stick_deadband;
     float32_t minimum_control_throttle;
     /** I terms remain cleared below this throttle to prevent ground windup. */
@@ -62,6 +66,16 @@ typedef struct
     float32_t pitch_deg;
     bool valid;
 } FlightControl_Attitude_t;
+
+/** Absolute magnetic heading and the outer yaw-angle loop state. */
+typedef struct
+{
+    float32_t heading_deg;
+    float32_t setpoint_deg;
+    float32_t error_deg;
+    bool valid;
+    bool hold_active;
+} FlightControl_Heading_t;
 
 typedef struct
 {
@@ -104,6 +118,7 @@ typedef struct
     bool valid;
     bool integrator_enabled;
     FlightControl_Attitude_t attitude;
+    FlightControl_Heading_t heading;
     FlightControl_Setpoint_t setpoint;
     FlightControl_AxisOutput_t roll;
     FlightControl_AxisOutput_t pitch;
@@ -142,6 +157,9 @@ typedef struct
     bool attitude_initialized;
     bool accel_filter_initialized;
     bool rate_filter_initialized;
+    MagHeading_Data_t heading_estimator;
+    float32_t heading_setpoint_rad;
+    bool heading_setpoint_initialized;
     FlightControl_PIDState_t roll_pid;
     FlightControl_PIDState_t pitch_pid;
     FlightControl_PIDState_t yaw_pid;
@@ -164,6 +182,7 @@ FlightControl_Status_t FlightControl_Update(
     FlightControl_Data_t *data,
     LSM6DS_Status_t imu_status,
     const LSM6DS_Sample_t *imu,
+    const LIS2MDL_Data_t *magnetometer,
     const RP4TDM_Controls_t *receiver);
 
 #endif /* INCLUDE_FLIGHT_CONTROL_H_ */

@@ -19,23 +19,23 @@ frame before the next deadline, the new frame is discarded and
 `telemetry_data.dropped_frame_count` increases. Flight control never waits for
 USB transmission.
 
-## Schema 4 fixed frame
+## Schema 5 fixed frame
 
-The complete frame is always 180 bytes. It has no CRC and contains no validity
+The complete frame is always 192 bytes. It has no CRC and contains no validity
 flags. A four-byte sync word allows the receiver to recover the frame boundary.
 
 | Offset | Type | Field | Value or unit |
 |---:|---|---|---|
 | 0...3 | `U32` | `sync` | `0xA55A3CC3`, bytes `C3 3C 5A A5` |
-| 4...7 | `U32` | `schema_version` | `4` |
+| 4...7 | `U32` | `schema_version` | `5` |
 | 8...11 | `U32` | `sequence` | Frame count |
 | 12...19 | `U64` | `timestamp_us` | Microseconds |
-| 20...179 | `40 × float32` | Flight signals | Listed below |
+| 20...191 | `43 × float32` | Flight signals | Listed below |
 
 The first eight bytes are:
 
 ```text
-C3 3C 5A A5 04 00 00 00
+C3 3C 5A A5 05 00 00 00
 ```
 
 ## Flight signals
@@ -52,36 +52,39 @@ C3 3C 5A A5 04 00 00 00
 | 7 | `mag_x` | µT |
 | 8 | `mag_y` | µT |
 | 9 | `mag_z` | µT |
-| 10 | `roll_rate_measured` | deg/s |
-| 11 | `pitch_rate_measured` | deg/s |
-| 12 | `yaw_rate_measured` | deg/s |
-| 13 | `roll_angle` | deg |
-| 14 | `pitch_angle` | deg |
-| 15 | `throttle_setpoint` | 0...1 |
-| 16 | `roll_angle_setpoint` | deg |
-| 17 | `pitch_angle_setpoint` | deg |
-| 18 | `roll_rate_setpoint` | deg/s |
-| 19 | `pitch_rate_setpoint` | deg/s |
-| 20 | `yaw_rate_setpoint` | deg/s |
-| 21 | `roll_error` | deg/s |
-| 22 | `roll_proportional` | normalized |
-| 23 | `roll_integral` | normalized |
-| 24 | `roll_derivative` | normalized |
-| 25 | `roll_output` | normalized |
-| 26 | `pitch_error` | deg/s |
-| 27 | `pitch_proportional` | normalized |
-| 28 | `pitch_integral` | normalized |
-| 29 | `pitch_derivative` | normalized |
-| 30 | `pitch_output` | normalized |
-| 31 | `yaw_error` | deg/s |
-| 32 | `yaw_proportional` | normalized |
-| 33 | `yaw_integral` | normalized |
-| 34 | `yaw_derivative` | normalized |
-| 35 | `yaw_output` | normalized |
-| 36 | `motor_front_left` | µs |
-| 37 | `motor_front_right` | µs |
-| 38 | `motor_rear_right` | µs |
-| 39 | `motor_rear_left` | µs |
+| 10 | `heading` | deg, wrapped to -180...180 |
+| 11 | `heading_setpoint` | deg, wrapped to -180...180 |
+| 12 | `heading_error` | deg, shortest signed error |
+| 13 | `roll_rate_measured` | deg/s |
+| 14 | `pitch_rate_measured` | deg/s |
+| 15 | `yaw_rate_measured` | deg/s |
+| 16 | `roll_angle` | deg |
+| 17 | `pitch_angle` | deg |
+| 18 | `throttle_setpoint` | 0...1 |
+| 19 | `roll_angle_setpoint` | deg |
+| 20 | `pitch_angle_setpoint` | deg |
+| 21 | `roll_rate_setpoint` | deg/s |
+| 22 | `pitch_rate_setpoint` | deg/s |
+| 23 | `yaw_rate_setpoint` | deg/s |
+| 24 | `roll_error` | deg/s |
+| 25 | `roll_proportional` | normalized |
+| 26 | `roll_integral` | normalized |
+| 27 | `roll_derivative` | normalized |
+| 28 | `roll_output` | normalized |
+| 29 | `pitch_error` | deg/s |
+| 30 | `pitch_proportional` | normalized |
+| 31 | `pitch_integral` | normalized |
+| 32 | `pitch_derivative` | normalized |
+| 33 | `pitch_output` | normalized |
+| 34 | `yaw_error` | deg/s |
+| 35 | `yaw_proportional` | normalized |
+| 36 | `yaw_integral` | normalized |
+| 37 | `yaw_derivative` | normalized |
+| 38 | `yaw_output` | normalized |
+| 39 | `motor_front_left` | µs |
+| 40 | `motor_front_right` | µs |
+| 41 | `motor_rear_right` | µs |
+| 42 | `motor_rear_left` | µs |
 
 The accelerometer and gyroscope fields are the latest physical IMU sample
 without the controller low-pass. The gyro already has its startup bias removed.
@@ -92,7 +95,16 @@ the aircraft FRD frame: X forward, Y right, Z down. The installation-specific
 calibration removes the sensor-frame bias, applies the fitted 3x3 matrix, and
 includes the validated orientation `[-X, -Y, +Z]`. The sensor produces 50
 samples/s, so each value normally appears in two consecutive 100 Hz telemetry
-frames. These fields remain observational and do not affect yaw control.
+frames. The heading estimator tilt-compensates these values with the current
+roll and pitch, rejects field magnitudes outside the calibrated range, and
+applies a circular 3 Hz low-pass filter.
+
+When the yaw stick is centered, `heading_setpoint` is the captured magnetic
+heading and `heading_error` drives the outer heading P loop. That loop produces
+`yaw_rate_setpoint`; the existing gyroscope yaw-rate PID remains the inner,
+fast loop. Moving the yaw stick restores direct yaw-rate command and captures a
+new heading when the stick returns to center. Invalid or stale magnetic data
+automatically disables heading hold while retaining yaw-rate control.
 
 The sensor snapshots use the latest available data. Offline analysis must use
 consecutive `timestamp_us` differences as the recorded-row interval. The four
@@ -103,17 +115,17 @@ motor fields are the final ESC pulses after MotorOutput headroom management.
 `tools/telemetry_dashboard.py` decodes the complete frame with:
 
 ```python
-FRAME_STRUCT = struct.Struct("<IIIQ40f")
+FRAME_STRUCT = struct.Struct("<IIIQ43f")
 ```
 
 `<` selects little-endian representation, `III` represents the three U32
-header fields, `Q` the U64 timestamp, and `40f` the 40 float32 signals. The
+header fields, `Q` the U64 timestamp, and `43f` the 43 float32 signals. The
 decoder:
 
 1. Appends serial reads to a persistent byte buffer.
 2. Finds `C3 3C 5A A5` and discards earlier bytes.
-3. Waits for 180 bytes.
-4. Requires `schema_version == 4`.
+3. Waits for 192 bytes.
+4. Requires `schema_version == 5`.
 5. Rejects non-finite payload values and resumes sync search.
 6. Delivers decoded frames to the Tk GUI through a bounded queue.
 

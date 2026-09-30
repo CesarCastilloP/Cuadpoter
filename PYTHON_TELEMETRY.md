@@ -1,7 +1,7 @@
 # Panel de telemetría en Python para Spyder
 
 `tools/telemetry_dashboard.py` recibe la trama binaria del firmware, muestra
-las 40 señales en tiempo real y permite grabar o exportar los datos a CSV. La
+las 43 señales en tiempo real y permite grabar o exportar los datos a CSV. La
 interfaz usa `tkinter` y gráficas propias, por lo que solo necesita `pyserial`.
 
 ## Instalación en Spyder
@@ -40,9 +40,10 @@ la interfaz, las gráficas y la exportación CSV sin conectar el microcontrolado
 - Conteo de saltos de secuencia, huecos de timestamp y resincronizaciones.
 - Indicador de actitud para roll y pitch.
 - Vista superior de los cuatro motores con su pulso en microsegundos.
+- Gráfica de heading magnético, referencia capturada y error de rumbo.
 - Gráficas de actitud, giroscopio IMU directo, tasas angulares filtradas,
   errores PID, salidas PID, motores, aceleración y términos P/I/D por eje.
-- Tabla con cabecera y las 40 variables enviadas por el firmware.
+- Tabla con cabecera y las 43 variables enviadas por el firmware.
 - Diagnóstico de bytes, tramas, descartes y estado de la grabación.
 
 ## Grabación CSV
@@ -59,8 +60,8 @@ El CSV usa UTF-8, separador coma y punto decimal. Sus columnas son:
 1. Hora ISO del PC.
 2. Tiempo transcurrido desde la conexión.
 3. `sync`, versión, secuencia y timestamp del microcontrolador.
-4. Las 40 señales en el mismo orden de `TELEMETRY.md`, incluidos los seis
-   valores IMU y los tres ejes magnéticos en unidades físicas.
+4. Las 43 señales en el mismo orden de `TELEMETRY.md`, incluidos los seis
+   valores IMU, los tres ejes magnéticos y las tres variables de heading.
 
 ## Uso para análisis inercial
 
@@ -81,6 +82,12 @@ nariz, Y hacia la derecha y Z hacia abajo. El firmware ya retira el offset
 hard-iron y aplica la matriz soft-iron y de orientación. Se repiten normalmente
 en dos filas porque el magnetómetro trabaja a 50 Hz y la telemetría a 100 Hz.
 
+`heading` es el rumbo magnético compensado por roll/pitch y filtrado. Al soltar
+el stick de yaw, `heading_setpoint` captura el rumbo presente y
+`heading_error` muestra la diferencia angular más corta en el intervalo
+-180...180°. El lazo externo convierte este error en `yaw_rate_setpoint`; las
+columnas de yaw del PID permiten evaluar la respuesta del lazo interno.
+
 ## Validación del decodificador
 
 Desde la carpeta `tools`, ejecute:
@@ -100,7 +107,7 @@ del CSV.
 - **Huecos de timestamp:** separación mayor de 15 ms entre snapshots. También
   detecta periodos que el firmware omitió antes de construir una trama.
 - **Bytes descartados:** datos anteriores a la palabra de sincronía.
-- **Candidatos inválidos:** sync encontrada con versión distinta de 3 o valores
+- **Candidatos inválidos:** sync encontrada con versión distinta de 5 o valores
   flotantes no finitos.
 - **Overflow cola PC:** la interfaz no consumió eventos tan rápido como llegaron.
 
