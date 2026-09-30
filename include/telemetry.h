@@ -2,7 +2,7 @@
  * @file telemetry.h
  * @author Alberto Vazquez
  * @brief Non-blocking binary telemetry over the LaunchPad USB virtual COM port.
- * @version 1.4.0
+ * @version 1.5.0
  * @date 2026-09-29
  */
 
@@ -16,11 +16,11 @@
 
 #define TELEMETRY_DEFAULT_BAUD_RATE       460800U
 #define TELEMETRY_DEFAULT_OUTPUT_RATE_HZ  100U
-#define TELEMETRY_TX_BUFFER_SIZE          192U
+#define TELEMETRY_TX_BUFFER_SIZE          224U
 #define TELEMETRY_SYNC_WORD               0xA55A3CC3U
-#define TELEMETRY_SCHEMA_VERSION          5U
-#define TELEMETRY_FLIGHT_SIGNAL_COUNT     43U
-#define TELEMETRY_FLIGHT_FRAME_SIZE       192U
+#define TELEMETRY_SCHEMA_VERSION          6U
+#define TELEMETRY_FLIGHT_SIGNAL_COUNT     51U
+#define TELEMETRY_FLIGHT_FRAME_SIZE       224U
 
 typedef enum
 {

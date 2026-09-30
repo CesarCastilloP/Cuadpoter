@@ -2,7 +2,7 @@
  * @file flight_control.c
  * @author Alberto Vazquez
  * @brief Cascaded attitude/rate controller with normalized X-frame outputs.
- * @version 1.5.0
+ * @version 1.6.0
  * @date 2026-09-29
  */
 
@@ -99,6 +99,7 @@ FlightControl_Status_t FlightControl_Init(
     float32_t level_pitch_rad;
     float32_t upright_accel_z_sign;
     MagHeading_Status_t heading_status;
+    HorizontalDrift_Status_t drift_status;
 
     if(data == NULL)
     {
@@ -140,6 +141,12 @@ FlightControl_Status_t FlightControl_Init(
     {
         return FLIGHT_CONTROL_STATUS_INVALID_CONFIG;
     }
+    drift_status = HorizontalDrift_Init(
+        &data->horizontal_drift, NULL, level_accel_mps2);
+    if(drift_status != HORIZONTAL_DRIFT_STATUS_OK)
+    {
+        return FLIGHT_CONTROL_STATUS_INVALID_CONFIG;
+    }
     data->upright_accel_z_sign = upright_accel_z_sign;
     data->filtered_accel_mps2 = *level_accel_mps2;
     data->accel_filter_initialized = true;
@@ -168,6 +175,7 @@ FlightControl_Status_t FlightControl_Update(
     float32_t roll_rate_deg_s;
     float32_t pitch_rate_deg_s;
     float32_t yaw_rate_deg_s;
+    bool command_centered;
 
     if((data == NULL) || (imu == NULL) || (magnetometer == NULL) ||
        (receiver == NULL))
@@ -226,10 +234,31 @@ FlightControl_Status_t FlightControl_Update(
 
     data->output.setpoint.throttle =
         clampf(receiver->throttle, 0.0f, 1.0f);
-    data->output.setpoint.roll_angle_deg =
-        roll_command * data->config.max_tilt_deg;
-    data->output.setpoint.pitch_angle_deg =
-        pitch_command * data->config.max_tilt_deg;
+    update_yaw_setpoint(data, yaw_command);
+
+    command_centered = (roll_command == 0.0f) &&
+                       (pitch_command == 0.0f) &&
+                       (yaw_command == 0.0f);
+    (void)HorizontalDrift_Update(
+        &data->horizontal_drift,
+        &imu->accel_mps2,
+        data->output.attitude.roll_deg,
+        data->output.attitude.pitch_deg,
+        imu->dt_s,
+        data->output.setpoint.throttle,
+        command_centered,
+        data->output.heading.hold_active,
+        data->accel_trusted);
+    data->output.setpoint.roll_angle_deg = clampf(
+        (roll_command * data->config.max_tilt_deg) +
+        data->horizontal_drift.output.roll_correction_deg,
+        -data->config.max_tilt_deg,
+        data->config.max_tilt_deg);
+    data->output.setpoint.pitch_angle_deg = clampf(
+        (pitch_command * data->config.max_tilt_deg) +
+        data->horizontal_drift.output.pitch_correction_deg,
+        -data->config.max_tilt_deg,
+        data->config.max_tilt_deg);
     data->output.setpoint.roll_rate_deg_s = clampf(
         data->config.angle_kp *
         (data->output.setpoint.roll_angle_deg -
@@ -242,7 +271,6 @@ FlightControl_Status_t FlightControl_Update(
          data->output.attitude.pitch_deg),
         -data->config.max_roll_pitch_rate_deg_s,
         data->config.max_roll_pitch_rate_deg_s);
-    update_yaw_setpoint(data, yaw_command);
     data->output.valid = true;
 
     if(data->output.setpoint.throttle <=
@@ -433,6 +461,7 @@ static void zero_actuation(FlightControl_Data_t *data)
 static void zero_commands_and_actuation(FlightControl_Data_t *data)
 {
     memset(&data->output.setpoint, 0, sizeof(data->output.setpoint));
+    HorizontalDrift_Reset(&data->horizontal_drift);
     data->output.heading.error_deg = 0.0f;
     data->output.heading.hold_active = false;
     data->heading_setpoint_initialized = false;

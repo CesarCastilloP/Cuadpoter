@@ -33,8 +33,8 @@ def make_frame(sequence: int = 7, timestamp_us: int = 123456) -> bytes:
 
 class TelemetryDecoderTests(unittest.TestCase):
     def test_schema_has_expected_size(self) -> None:
-        self.assertEqual(FRAME_SIZE, 192)
-        self.assertEqual(len(SIGNAL_KEYS), 43)
+        self.assertEqual(FRAME_SIZE, 224)
+        self.assertEqual(len(SIGNAL_KEYS), 51)
         self.assertEqual(
             SIGNAL_KEYS[1:10],
             (
@@ -52,6 +52,19 @@ class TelemetryDecoderTests(unittest.TestCase):
         self.assertEqual(
             SIGNAL_KEYS[10:13],
             ("heading", "heading_setpoint", "heading_error"),
+        )
+        self.assertEqual(
+            SIGNAL_KEYS[13:21],
+            (
+                "horizontal_accel_x",
+                "horizontal_accel_y",
+                "horizontal_velocity_x",
+                "horizontal_velocity_y",
+                "horizontal_displacement_x",
+                "horizontal_displacement_y",
+                "drift_roll_correction",
+                "drift_pitch_correction",
+            ),
         )
 
     def test_partial_reads_and_leading_noise_resynchronize(self) -> None:

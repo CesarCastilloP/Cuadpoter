@@ -1,6 +1,6 @@
 """Real-time flight telemetry dashboard for MCU_Cuadcopter.
 
-The application decodes schema 5 emitted by ``src/telemetry.c``.  It uses a
+The application decodes schema 6 emitted by ``src/telemetry.c``.  It uses a
 background thread for the serial port and keeps every Tk operation in the main
 thread.  The plots are drawn with Tk Canvas so Spyder only needs ``pyserial``;
 NumPy, Matplotlib and Qt are intentionally not required.
@@ -40,14 +40,14 @@ DEFAULT_BAUD_RATE = 460_800
 EXPECTED_OUTPUT_RATE_HZ = 100.0
 SYNC_WORD = 0xA55A3CC3
 SYNC_BYTES = struct.pack("<I", SYNC_WORD)
-SCHEMA_VERSION = 5
-FRAME_STRUCT = struct.Struct("<IIIQ43f")
+SCHEMA_VERSION = 6
+FRAME_STRUCT = struct.Struct("<IIIQ51f")
 FRAME_SIZE = FRAME_STRUCT.size
 MAX_HISTORY_SAMPLES = 12_000
 SERIAL_READ_TIMEOUT_S = 0.050
 LINK_TIMEOUT_S = 0.500
 
-if FRAME_SIZE != 192:
+if FRAME_SIZE != 224:
     raise RuntimeError(f"Unexpected telemetry frame size: {FRAME_SIZE}")
 
 
@@ -103,6 +103,14 @@ SIGNALS: Tuple[SignalDefinition, ...] = (
     SignalDefinition("heading", "Heading magnético", "°", "Heading"),
     SignalDefinition("heading_setpoint", "Setpoint heading", "°", "Heading"),
     SignalDefinition("heading_error", "Error heading", "°", "Heading"),
+    SignalDefinition("horizontal_accel_x", "Aceleración horizontal X", "m/s²", "Freno inercial"),
+    SignalDefinition("horizontal_accel_y", "Aceleración horizontal Y", "m/s²", "Freno inercial"),
+    SignalDefinition("horizontal_velocity_x", "Velocidad horizontal X", "m/s", "Freno inercial"),
+    SignalDefinition("horizontal_velocity_y", "Velocidad horizontal Y", "m/s", "Freno inercial"),
+    SignalDefinition("horizontal_displacement_x", "Desplazamiento local X", "m", "Freno inercial"),
+    SignalDefinition("horizontal_displacement_y", "Desplazamiento local Y", "m", "Freno inercial"),
+    SignalDefinition("drift_roll_correction", "Corrección roll", "°", "Freno inercial"),
+    SignalDefinition("drift_pitch_correction", "Corrección pitch", "°", "Freno inercial"),
     SignalDefinition("roll_rate_measured", "Rate roll medido", "°/s", "Tasas"),
     SignalDefinition("pitch_rate_measured", "Rate pitch medido", "°/s", "Tasas"),
     SignalDefinition("yaw_rate_measured", "Rate yaw medido", "°/s", "Tasas"),
@@ -520,6 +528,14 @@ class DemoReader(threading.Thread):
         heading = ((math.degrees(magnetic_heading) + 180.0) % 360.0) - 180.0
         heading_setpoint = ((heading + 8.0 * math.sin(elapsed * 0.10) + 180.0) % 360.0) - 180.0
         heading_error = ((heading_setpoint - heading + 180.0) % 360.0) - 180.0
+        horizontal_accel_x = 0.18 * math.sin(elapsed * 0.75)
+        horizontal_accel_y = 0.14 * math.cos(elapsed * 0.63)
+        horizontal_velocity_x = 0.12 * math.sin(elapsed * 0.35)
+        horizontal_velocity_y = 0.10 * math.cos(elapsed * 0.31)
+        horizontal_displacement_x = 0.20 * math.sin(elapsed * 0.16)
+        horizontal_displacement_y = 0.16 * math.cos(elapsed * 0.14)
+        drift_roll_correction = 0.55 * math.cos(elapsed * 0.31)
+        drift_pitch_correction = 0.65 * math.sin(elapsed * 0.35)
 
         values = (
             1.0 / 416.0,
@@ -535,6 +551,14 @@ class DemoReader(threading.Thread):
             heading,
             heading_setpoint,
             heading_error,
+            horizontal_accel_x,
+            horizontal_accel_y,
+            horizontal_velocity_x,
+            horizontal_velocity_y,
+            horizontal_displacement_x,
+            horizontal_displacement_y,
+            drift_roll_correction,
+            drift_pitch_correction,
             roll_rate,
             pitch_rate,
             yaw_rate,
@@ -1043,6 +1067,46 @@ class TelemetryDashboard(tk.Tk):
                 PlotSeries("heading_error", "Error", SERIES_COLORS[4]),
             ),
             (-180.0, 180.0),
+        ),
+        (
+            "Acel. XY",
+            "Aceleración horizontal compensada",
+            "m/s²",
+            (
+                PlotSeries("horizontal_accel_x", "X", SERIES_COLORS[0]),
+                PlotSeries("horizontal_accel_y", "Y", SERIES_COLORS[1]),
+            ),
+            (-1.0, 1.0),
+        ),
+        (
+            "Velocidad XY",
+            "Velocidad horizontal estimada",
+            "m/s",
+            (
+                PlotSeries("horizontal_velocity_x", "X", SERIES_COLORS[0]),
+                PlotSeries("horizontal_velocity_y", "Y", SERIES_COLORS[1]),
+            ),
+            (-0.75, 0.75),
+        ),
+        (
+            "Desplazamiento XY",
+            "Desplazamiento local desde el último reinicio",
+            "m",
+            (
+                PlotSeries("horizontal_displacement_x", "X", SERIES_COLORS[0]),
+                PlotSeries("horizontal_displacement_y", "Y", SERIES_COLORS[1]),
+            ),
+            (-0.75, 0.75),
+        ),
+        (
+            "Corrección XY",
+            "Trim angular del freno inercial",
+            "grados",
+            (
+                PlotSeries("drift_roll_correction", "Roll", SERIES_COLORS[0]),
+                PlotSeries("drift_pitch_correction", "Pitch", SERIES_COLORS[1]),
+            ),
+            (-2.5, 2.5),
         ),
         (
             "Tasas",

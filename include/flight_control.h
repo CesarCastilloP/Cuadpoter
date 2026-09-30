@@ -2,13 +2,14 @@
  * @file flight_control.h
  * @author Alberto Vazquez
  * @brief Cascaded attitude and angular-rate control for an X quadcopter.
- * @version 1.5.0
+ * @version 1.6.0
  * @date 2026-09-29
  */
 
 #ifndef INCLUDE_FLIGHT_CONTROL_H_
 #define INCLUDE_FLIGHT_CONTROL_H_
 
+#include "horizontal_drift.h"
 #include "lsm6ds.h"
 #include "mag_heading.h"
 #include "rp4tdm.h"
@@ -143,6 +144,8 @@ typedef struct
     FlightControl_Output_t output;
     /** Startup board attitude removed from the public roll and pitch angles. */
     FlightControl_Attitude_t level_reference;
+    /** Optional short-horizon IMU drift brake and its observable estimates. */
+    HorizontalDrift_Data_t horizontal_drift;
     FlightControl_Status_t last_status;
 
     /* Private runtime state. */
