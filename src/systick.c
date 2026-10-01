@@ -4,7 +4,7 @@
  *
  * @brief Millisecond delays and a high-resolution monotonic time base.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - SysTick produces one interrupt per millisecond for startup delays and coarse
  *   elapsed time. The interrupt adds one to g_milliseconds.
  * - TIMER7A counts processor-clock cycles continuously. Timebase_GetCycles()

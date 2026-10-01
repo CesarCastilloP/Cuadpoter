@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief Safe conversion and delivery of normalized commands to the ESC PWM driver.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - FlightControl produces four dimensionless values from 0.0 to 1.0.
  * - MotorOutput_Update() applies the configured stopped/idle rules, preserves
  *   mixer differentials when possible, converts each value to microseconds, and

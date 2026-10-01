@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief Validated and tilt-compensated magnetic heading estimation.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - Update receives the calibrated magnetic-field vector plus current roll and
  *   pitch, rejects stale or physically implausible samples, removes tilt, and
  *   calculates heading with atan2().

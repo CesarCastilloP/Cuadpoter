@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief Synchronized PWM0 outputs for four standard pulse-input ESCs.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - Init configures PWM0 outputs PF0, PF2, PG0, and PK4 for the four motors.
  * - Pulse widths are supplied in microseconds. microseconds_to_ticks() converts
  *   them to PWM clock ticks using the configured clock and divider.

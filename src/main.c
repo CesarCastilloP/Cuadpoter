@@ -4,7 +4,7 @@
  *
  * @brief System initialization and cooperative flight-sensor scheduler.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - This file is the program entry point. Execution starts in main().
  * - config() initializes the clock, communications, sensors, controller, LEDs,
  *   and motor-output hardware in the only safe dependency order.

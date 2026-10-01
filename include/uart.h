@@ -10,7 +10,7 @@
  * value of zero performs a non-blocking read.  The flight application uses
  * UART0 for USB telemetry and UART4 for the RP4TDM/CRSF receiver.
  *
- * Beginner's contract shared by UART0 through UART7:
+ * Shared UART interface contract for UART0 through UART7:
  * - uartN_init(baudrate, callback) configures the pins and peripheral.
  *   baudrate is the serial speed in bit/s.  callback receives one uint8_t byte
  *   whenever an RX interrupt accepts data.  The function returns nothing.

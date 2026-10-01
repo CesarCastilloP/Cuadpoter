@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief LaunchPad initialization-state LED implementation.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - Init configures three on-board LEDs as digital outputs.
  * - Set translates one named startup state into a visible LED combination.
  * - The LEDs communicate startup progress only; no LED participates in control.

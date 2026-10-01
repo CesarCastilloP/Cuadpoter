@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief Instance-based BMP390 acquisition and compensation.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - Init searches both legal I2C addresses, checks the chip identity, reads the
  *   factory calibration coefficients, and configures oversampling and rate.
  * - Update reads one raw pressure/temperature sample and applies the Bosch

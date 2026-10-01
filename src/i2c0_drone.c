@@ -4,7 +4,7 @@
  *
  * @brief Blocking I2C0 master interface with bounded transaction time.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - I2C0_Init() assigns PB2 to clock and PB3 to bidirectional data, then chooses
  *   the requested bus frequency from the real system clock.
  * - WriteRead sends a register address and receives sequential bytes. WriteWrite

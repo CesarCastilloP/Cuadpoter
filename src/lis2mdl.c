@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief LIS2MDL identification, configuration, and magnetic-field reading.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - Init proves that an LIS2MDL is present at address 0x1E and configures it.
  * - Update reads X/Y/Z signed counts when the sensor reports fresh data.
  * - convert_and_calibrate() converts counts to microteslas, removes hard-iron

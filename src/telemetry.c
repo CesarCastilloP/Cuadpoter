@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief Fixed-rate binary telemetry with non-blocking UART transmission.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - Update snapshots current module outputs at 100 Hz into one fixed-layout
  *   little-endian frame. Each writer_* helper appends one explicitly sized type.
  * - service_transmitter() offers only bytes that fit in the UART0 hardware FIFO;

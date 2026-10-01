@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief Cascaded attitude/rate controller with normalized X-frame outputs.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - FlightControl_Update() receives one calibrated IMU sample, the latest
  *   receiver controls, the latest magnetometer sample, and elapsed time.
  * - Roll and pitch sticks become desired angles in degrees. Flight Trim and an

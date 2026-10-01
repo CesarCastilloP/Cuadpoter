@@ -513,21 +513,21 @@ tamaño = 3·U32 + U64 + 53·float32 = 12 + 8 + 212 = 232 bytes</div></div>
           <div class="page-head"><div><span class="eyebrow">Lectura visual del firmware</span><h2>Diagramas de flujo por archivo</h2><p class="page-intro">Elija un archivo, siga sus funciones en el orden real y seleccione cada bloque para leer qué recibe, qué produce, en qué unidades trabaja y qué estado modifica. Los archivos <code>.h</code> definen el contrato público; los <code>.c</code>, Python y MATLAB contienen la ejecución.</p></div><span class="version-chip">23 unidades documentadas</span></div>
 
           <div class="panel full">
-            <h3>Cómo leer C si es su primer contacto con programación</h3>
-            <p class="panel-subtitle">Estas palabras aparecen en todos los archivos y explican cómo circulan los datos.</p>
+            <h3>Convenciones de implementación y trazabilidad</h3>
+            <p class="panel-subtitle">Criterios usados para delimitar módulos, representar estado, mantener coherencia temporal y documentar las unidades físicas.</p>
             <div class="code-basics" style="margin-top:14px">
-              <div class="code-basic"><code>#include "archivo.h"</code><span>Hace visibles los tipos y funciones públicas declarados en otra cabecera.</span></div>
-              <div class="code-basic"><code>#define NOMBRE valor</code><span>Crea una constante de compilación. No ocupa una variable modificable en tiempo de ejecución.</span></div>
-              <div class="code-basic"><code>typedef struct { ... }</code><span>Agrupa variables relacionadas en una estructura con nombre, como todos los datos de una IMU.</span></div>
-              <div class="code-basic"><code>typedef enum { ... }</code><span>Da nombres legibles a estados enteros, por ejemplo OK, timeout o dato inválido.</span></div>
-              <div class="code-basic"><code>const</code><span>La función puede leer ese dato, pero su contrato prohíbe modificarlo.</span></div>
-              <div class="code-basic"><code>volatile</code><span>El valor puede cambiar fuera del flujo visible, por una interrupción o hardware; siempre debe releerse.</span></div>
-              <div class="code-basic"><code>Tipo *puntero</code><span>Entrega la dirección de una variable. Permite que una función lea o actualice la estructura original.</span></div>
-              <div class="code-basic"><code>static</code><span>En una función o variable global limita el nombre al archivo actual; evita que otros módulos dependan de detalles internos.</span></div>
-              <div class="code-basic"><code>if / else</code><span>Selecciona un camino según una condición verdadera o falsa.</span></div>
-              <div class="code-basic"><code>for / while</code><span>Repite instrucciones. En este firmware todos los waits de hardware importantes tienen límite, salvo el lazo principal.</span></div>
-              <div class="code-basic"><code>return estado;</code><span>Termina una función y entrega su resultado. Los enums permiten distinguir OK, espera y cada fallo.</span></div>
-              <div class="code-basic"><code>campo.unidad</code><span>Los sufijos indican unidad: <code>_us</code> microsegundos, <code>_ms</code> milisegundos, <code>_hz</code> hertz, <code>_deg</code> grados, <code>_rad_s</code> rad/s y <code>_mps2</code> m/s².</span></div>
+              <div class="code-basic"><code>#include "modulo.h"</code><span>Dependencia explícita contra el contrato público del módulo; la implementación permanece en su archivo <code>.c</code>.</span></div>
+              <div class="code-basic"><code>#define PARAMETRO valor</code><span>Configuración resuelta en compilación: frecuencias, límites, registros, escalas y selección de funciones opcionales.</span></div>
+              <div class="code-basic"><code>typedef struct { ... }</code><span>Estado coherente de una instancia: configuración, última muestra, salidas, memoria de filtros y contadores de diagnóstico.</span></div>
+              <div class="code-basic"><code>typedef enum { ... }</code><span>Contrato de estado discreto. Distingue operación correcta, ausencia normal de dato, rechazo de validez y fallos de transporte.</span></div>
+              <div class="code-basic"><code>const</code><span>Expresa propiedad de solo lectura en la interfaz y permite comprobar que una función no altera la entrada del llamador.</span></div>
+              <div class="code-basic"><code>volatile</code><span>Identifica estado compartido con ISR o hardware y obliga a efectuar cada acceso observable; no sustituye sincronización atómica.</span></div>
+              <div class="code-basic"><code>Tipo *instancia</code><span>Referencia al estado persistente propiedad del llamador. Evita estado global oculto y permite publicar resultados y diagnósticos.</span></div>
+              <div class="code-basic"><code>static</code><span>Enlace interno del módulo para encapsular algoritmos auxiliares, tablas y estado que no forman parte de la API pública.</span></div>
+              <div class="code-basic"><code>period / deadline</code><span>El periodo define la cadencia; la fecha límite absoluta se incrementa por múltiplos exactos para no acumular deriva del tiempo de ejecución.</span></div>
+              <div class="code-basic"><code>bounded wait</code><span>Las esperas de periféricos finalizan por condición o timeout. El único lazo deliberadamente infinito es el scheduler principal.</span></div>
+              <div class="code-basic"><code>return status;</code><span>Propagación de causa: el llamador conserva la diferencia entre dato no disponible, argumento inválido, timeout, NACK y error de configuración.</span></div>
+              <div class="code-basic"><code>sufijos de unidad</code><span><code>_us</code>, <code>_ms</code>, <code>_hz</code>, <code>_deg</code>, <code>_rad_s</code> y <code>_mps2</code> hacen explícito el dominio físico y evitan conversiones implícitas.</span></div>
             </div>
             <div class="legend-row"><span>Rectángulo: llamada o transformación</span><span>Flecha: orden normal</span><span>Estado: enum devuelto</span><span>Efecto: dato o hardware modificado</span><span>Dependencia: módulo llamado</span></div>
           </div>

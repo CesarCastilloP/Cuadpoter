@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief Instance-based LSM6DSR acquisition and calibration.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - Init detects the sensor, verifies WHO_AM_I, configures output data rate and
  *   full scale, and prepares the caller-owned data structure.
  * - CalibrateGyroscope averages stationary samples. Update reads one fresh

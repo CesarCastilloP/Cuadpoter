@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief Bounded IMU-only horizontal drift estimation and braking.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - This optional module removes the gravity component from accelerometer data,
  *   rotates the remaining horizontal acceleration into a heading-fixed frame,
  *   and integrates it over short intervals into velocity and displacement.

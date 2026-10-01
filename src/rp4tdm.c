@@ -3,7 +3,7 @@
  * @author Alberto Vazquez
  * @brief CRSF decoder for RP4TD-M primary flight controls.
  *
- * @details Beginner's reading guide:
+ * @details Engineering execution overview:
  * - UART4 interrupt code delivers one byte at a time to receiver_byte_callback().
  * - The callback only assembles a complete CRSF frame. RP4TDM_Process(), called
  *   from the main loop, verifies address/type/CRC and decodes sixteen channels.

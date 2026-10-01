@@ -11,7 +11,7 @@
  * functions are intended for setup/debug use; flight telemetry uses the UART0
  * non-blocking FIFO writer.
  *
- * Beginner's reading guide:
+ * Engineering execution overview:
  * - Each numbered UART family exposes the same operations: Init configures pins
  *   and baud rate, Sendbyte/Sendstring transmit, ReadByte/ReadBytes poll input,
  *   Callback stores a receive handler, and the ISR drains received bytes.
