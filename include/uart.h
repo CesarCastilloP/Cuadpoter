@@ -2,7 +2,32 @@
  * @file uart.h
  * @author Alberto Vazquez
  *
- * @brief header file uart, h code for UART module
+ * @brief Interrupt-driven access to the eight TM4C1294NCPDT UART modules.
+ *
+ * Each UART instance exposes the same interface: initialization, byte/string
+ * transmission, blocking reception with a finite timeout, and an optional
+ * receive callback.  A timeout is expressed in driver polling iterations; a
+ * value of zero performs a non-blocking read.  The flight application uses
+ * UART0 for USB telemetry and UART4 for the RP4TDM/CRSF receiver.
+ *
+ * Beginner's contract shared by UART0 through UART7:
+ * - uartN_init(baudrate, callback) configures the pins and peripheral.
+ *   baudrate is the serial speed in bit/s.  callback receives one uint8_t byte
+ *   whenever an RX interrupt accepts data.  The function returns nothing.
+ * - UARTN_Sendbyte(data) queues one raw byte for transmission and returns
+ *   nothing.  UARTN_Sendstring(str, length) sends exactly length bytes from
+ *   the caller-owned buffer; length is measured in bytes.
+ * - UART0_SendAvailable(data, length) is the telemetry-specific non-blocking
+ *   transmitter.  It returns the number of bytes actually placed in hardware.
+ * - UARTN_ReadByte(timeout) returns one byte as a non-negative int32_t, or -1
+ *   if no byte arrives before timeout polling iterations.  timeout has no time
+ *   unit because it counts loop iterations; zero means "check only once".
+ * - UARTN_ReadBytes(buffer, length, timeout) stores at most length bytes in the
+ *   supplied buffer and returns the number stored.  Both lengths are bytes.
+ * - uartN_callback(cb) replaces the receive callback.  Passing NULL disables
+ *   callback delivery.  It returns nothing.
+ * - uartN_isr() is entered by the processor, drains received bytes, reports
+ *   hardware errors, calls the callback when present, and returns nothing.
  *
  * @version 1.1.0
  * @date 2026-09-27
@@ -21,25 +46,30 @@
 #include "stdbool.h"
 
 
-//--------------------- CALLBACK FOR INTERRUPTS (ISRs) -------------------------
+/**
+ * Function invoked by a UART receive ISR for every accepted byte.
+ *
+ * @param data Raw received byte, with no protocol interpretation.
+ */
 typedef void (*uart_callback_t)(uint8_t data);
 
 
 /**
- * @brief Structure for UART3 data
+ * @brief Callback table indexed by UART peripheral number (0 through 7).
  */
 typedef struct
 {
-    uart_callback_t rx[8]; // Pointer to function
+    uart_callback_t rx[8]; /**< Per-instance RX byte callbacks; NULL disables dispatch. */
 }uart_cb_t;
 
 
 
 
 /**
- * @brief UART0 prototype functions
+ * @brief UART0 interface used by the ICDI USB virtual serial port.
  *
  * @note PA0 (RX), PA1 (TX)
+ * @note The telemetry application configures this interface at 460800 bit/s.
  *
  **/
 void uart0_isr(void);
@@ -52,7 +82,7 @@ uint32_t UART0_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout);
 void uart0_callback(uart_callback_t cb);
 
 /**
- * @brief UART1 prototype functions
+ * @brief UART1 generic byte-stream interface.
  *
  * @note PB0 (RX), PB1 (TX)
  *
@@ -66,7 +96,7 @@ void UART1_Sendstring(const uint8_t* str, uint16_t length);
 void uart1_callback(uart_callback_t cb);
 
 /**
- * @brief UART2 prototype functions
+ * @brief UART2 generic byte-stream interface.
  *
  * @note PA6 (RX), PA7 (TX)
  *
@@ -80,7 +110,7 @@ uint32_t UART2_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout);
 void uart2_callback(uart_callback_t cb);
 
 /**
- * @brief UART3 prototype functions
+ * @brief UART3 generic byte-stream interface.
  *
  * @note PA4 (RX), PA5 (TX)
  *
@@ -94,7 +124,7 @@ uint32_t UART3_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout);
 void uart3_callback(uart_callback_t cb);
 
 /**
- * @brief UART4 prototype functions
+ * @brief UART4 receiver interface used by the RP4TDM/CRSF module.
  *
  * @note PA2 (RX), PA3 (TX)
  *
@@ -110,9 +140,9 @@ void uart4_callback(uart_callback_t cb);
 
 
 /**
- * @brief UART5 prototype functions
+ * @brief UART5 generic byte-stream interface.
  *
- * @note PC5 (RX), PC7 (TX)
+ * @note PC6 (RX), PC7 (TX)
  *
  **/
 void uart5_isr(void);
@@ -125,7 +155,7 @@ void uart5_callback(uart_callback_t cb);
 
 
 /**
- * @brief UART6 prototype functions
+ * @brief UART6 generic byte-stream interface.
  *
  * @note PP0 (RX), PP1 (TX)
  *
@@ -140,7 +170,7 @@ void uart6_callback(uart_callback_t cb);
 
 
 /**
- * @brief UART7 prototype functions
+ * @brief UART7 generic byte-stream interface.
  *
  * @note PC4 (RX), PC5 (TX)
  *

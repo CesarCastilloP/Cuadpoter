@@ -22,6 +22,27 @@
 //
 //*****************************************************************************
 
+/**
+ * @file tm4c1294ncpdt_startup_ccs.c
+ * @brief Processor entry point and interrupt-vector table for the TM4C1294.
+ *
+ * Beginner's reading guide:
+ * - The microcontroller reads the first entries of g_pfnVectors immediately
+ *   after power-up.  Entry zero supplies the initial stack address and entry
+ *   one supplies the first executable function, ResetISR().
+ * - Every later table entry corresponds to one hardware interrupt source.
+ *   A zero marks a position reserved by the processor.  IntDefaultHandler
+ *   deliberately traps interrupts that the application has not configured.
+ * - SysTick is linked directly to systick_isr().  UART handlers are registered
+ *   later by DriverLib, so their original vector-table positions remain bound
+ *   to IntDefaultHandler in this source image.
+ * - This file has no physical units.  It describes addresses and function
+ *   destinations used by the processor during reset and interrupt dispatch.
+ *
+ * This module does not initialize sensors, motors, clocks, or application
+ * state.  Those operations begin after the TI C runtime calls main().
+ */
+
 #include <stdint.h>
 
 //*****************************************************************************
@@ -29,9 +50,16 @@
 // Forward declaration of the default fault handlers.
 //
 //*****************************************************************************
+/** @brief Transfers reset execution to the TI C runtime; no parameters or return value. */
 void ResetISR(void);
+
+/** @brief Traps a non-maskable interrupt in an infinite loop for debugging. */
 static void NmiSR(void);
+
+/** @brief Traps a processor fault in an infinite loop for debugging. */
 static void FaultISR(void);
+
+/** @brief Traps any interrupt for which no application handler was installed. */
 static void IntDefaultHandler(void);
 
 //*****************************************************************************
@@ -40,22 +68,23 @@ static void IntDefaultHandler(void);
 // processor is started
 //
 //*****************************************************************************
-extern void _c_int00(void);
+extern void _c_int00(void); /**< TI runtime entry: initializes C memory, then calls main(). */
 
 //*****************************************************************************
 //
 // Linker variable that marks the top of the stack.
 //
 //*****************************************************************************
-extern uint32_t __STACK_TOP;
+extern uint32_t __STACK_TOP; /**< Linker-provided first stack address, measured in bytes. */
 
 //*****************************************************************************
 //
 // External declarations for the interrupt handlers used by the application.
 //
 //*****************************************************************************
-// To be added by user
-void systick_isr(void);
+// SysTick is the only statically linked application interrupt.  UART handlers
+// are installed dynamically by DriverLib UARTIntRegister() during uart*_init().
+void systick_isr(void); /**< Runs once per 1 ms SysTick interrupt after initialization. */
 //*****************************************************************************
 //
 // The vector table.  Note that the proper constructs must be placed on this to
@@ -64,6 +93,11 @@ void systick_isr(void);
 //
 //*****************************************************************************
 #pragma DATA_SECTION(g_pfnVectors, ".intvecs")
+/*
+ * Each array element is a pointer to a function that receives no parameters
+ * and returns no value.  const prevents software from changing this table at
+ * runtime.  The linker places it in flash section .intvecs at address zero.
+ */
 void (* const g_pfnVectors[])(void) =
 {
     (void (*)(void))((uint32_t)&__STACK_TOP),
@@ -82,7 +116,7 @@ void (* const g_pfnVectors[])(void) =
     IntDefaultHandler,                      // Debug monitor handler
     0,                                      // Reserved
     IntDefaultHandler,                      // The PendSV handler
-    systick_isr,                      // The SysTick handler
+    systick_isr,                            // SysTick: 1 ms software time base
     IntDefaultHandler,                      // GPIO Port A
     IntDefaultHandler,                      // GPIO Port B
     IntDefaultHandler,                      // GPIO Port C
@@ -216,6 +250,8 @@ ResetISR(void)
     // Jump to the CCS C initialization routine.  This will enable the
     // floating-point unit as well, so that does not need to be done here.
     //
+    // _c_int00 copies initialized data to SRAM, clears .bss, initializes the
+    // C runtime/FPU, and finally calls main().
     __asm("    .global _c_int00\n"
           "    b.w     _c_int00");
 }

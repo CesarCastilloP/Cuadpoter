@@ -21,6 +21,9 @@ from telemetry_dashboard import (
 
 
 def make_frame(sequence: int = 7, timestamp_us: int = 123456) -> bytes:
+    """Build one deterministic schema-7 frame for decoder unit tests."""
+
+    # A unique fractional value per field makes ordering errors observable.
     values = tuple(float(index) + 0.25 for index in range(len(SIGNAL_KEYS)))
     return FRAME_STRUCT.pack(
         SYNC_WORD,
@@ -32,9 +35,12 @@ def make_frame(sequence: int = 7, timestamp_us: int = 123456) -> bytes:
 
 
 class TelemetryDecoderTests(unittest.TestCase):
+    """Verify framing, resynchronization, validation, and CSV compatibility."""
+
     def test_schema_has_expected_size(self) -> None:
-        self.assertEqual(FRAME_SIZE, 224)
-        self.assertEqual(len(SIGNAL_KEYS), 51)
+        """Verify schema 7 contains exactly 53 float signals and occupies 232 bytes."""
+        self.assertEqual(FRAME_SIZE, 232)
+        self.assertEqual(len(SIGNAL_KEYS), 53)
         self.assertEqual(
             SIGNAL_KEYS[1:10],
             (
@@ -66,8 +72,18 @@ class TelemetryDecoderTests(unittest.TestCase):
                 "drift_pitch_correction",
             ),
         )
+        self.assertEqual(
+            SIGNAL_KEYS[27:31],
+            (
+                "flight_roll_trim_deg",
+                "flight_pitch_trim_deg",
+                "roll_angle_setpoint",
+                "pitch_angle_setpoint",
+            ),
+        )
 
     def test_partial_reads_and_leading_noise_resynchronize(self) -> None:
+        """Verify arbitrary chunks and noise still yield the next complete valid frame."""
         raw = make_frame()
         decoder = TelemetryDecoder()
         decoded = []
@@ -82,6 +98,7 @@ class TelemetryDecoderTests(unittest.TestCase):
         self.assertGreaterEqual(decoder.bytes_discarded, 5)
 
     def test_invalid_version_is_skipped_before_next_valid_frame(self) -> None:
+        """Verify an unsupported schema is rejected and decoding resumes at the next sync."""
         values = tuple(float(index) for index in range(len(SIGNAL_KEYS)))
         invalid = FRAME_STRUCT.pack(SYNC_WORD, 99, 1, 100, *values)
         valid = make_frame(sequence=2, timestamp_us=200)
@@ -92,6 +109,7 @@ class TelemetryDecoderTests(unittest.TestCase):
         self.assertEqual(decoder.invalid_frame_count, 1)
 
     def test_non_finite_payload_is_rejected(self) -> None:
+        """Verify NaN or infinity cannot enter plots, indicators, or CSV output."""
         values = [0.0] * len(SIGNAL_KEYS)
         values[4] = math.nan
         invalid = FRAME_STRUCT.pack(SYNC_WORD, SCHEMA_VERSION, 1, 100, *values)
@@ -100,6 +118,7 @@ class TelemetryDecoderTests(unittest.TestCase):
         self.assertEqual(decoder.invalid_frame_count, 1)
 
     def test_csv_contains_header_and_all_signal_values(self) -> None:
+        """Verify CSV output includes metadata plus every signal in stable schema order."""
         decoder = TelemetryDecoder()
         frame = decoder.feed(make_frame())[0]
         with tempfile.TemporaryDirectory() as temporary_directory:

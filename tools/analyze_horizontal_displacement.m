@@ -24,7 +24,7 @@ close all;
 
 %% User configuration
 
-gravityMps2 = 9.80665;
+gravityMps2 = 9.80665; % Standard gravitational acceleration [m/s^2].
 
 % Windows identified from the recorded MCU timestamp. Edit these values when
 % processing a different experiment.
@@ -35,7 +35,7 @@ eventNames = {
     'Left +Y'
 };
 
-eventWindowsS = [
+eventWindowsS = [ % Start and end MCU-relative times for each movement [s].
     10.15, 12.95
     22.15, 24.95
     33.00, 35.05
@@ -43,7 +43,7 @@ eventWindowsS = [
 ];
 
 % Expected displacement vectors from the physical 0.50 m marks.
-expectedDisplacementM = [
+expectedDisplacementM = [ % Known local-frame X/Y displacement vectors [m].
      0.50,  0.00
     -0.50,  0.00
      0.00, -0.50
@@ -51,12 +51,12 @@ expectedDisplacementM = [
 ];
 
 % A local baseline is calculated immediately before every movement.
-baselineDurationS = 1.50;
-baselineGapS = 0.15;
+baselineDurationS = 1.50; % Stationary averaging duration before movement [s].
+baselineGapS = 0.15;      % Gap excluding hand contact before movement [s].
 
 % Known stationary intervals used only to characterize sensor noise.
 restNames = {'Rest 0'; 'Rest 1'; 'Rest 2'; 'Rest 3'; 'Rest 4'; 'Rest 5'};
-restWindowsS = [
+restWindowsS = [ % Stationary start/end times used for noise statistics [s].
      0.0,  5.8
      7.2,  9.8
     14.0, 19.0
@@ -81,7 +81,7 @@ if ~isfile(csvFile)
     error('Telemetry file not found: %s', string(csvFile));
 end
 
-data = readtable(csvFile);
+data = readtable(csvFile); % One row per decoded firmware telemetry frame.
 
 requiredVariables = {
     'sequence', 'timestamp_us', ...
@@ -95,11 +95,11 @@ if ~isempty(missingVariables)
     error('Missing required CSV variables: %s', strjoin(missingVariables, ', '));
 end
 
-timeS = (double(data.timestamp_us) - double(data.timestamp_us(1))) * 1.0e-6;
-sampleDtS = diff(timeS);
-sampleRateHz = 1.0 / median(sampleDtS);
-sequenceDelta = diff(double(data.sequence));
-lostFrames = sum(max(sequenceDelta - 1.0, 0.0));
+timeS = (double(data.timestamp_us) - double(data.timestamp_us(1))) * 1.0e-6; % [s]
+sampleDtS = diff(timeS);                         % Adjacent frame intervals [s].
+sampleRateHz = 1.0 / median(sampleDtS);          % Robust measured frame rate [Hz].
+sequenceDelta = diff(double(data.sequence));     % Frames advanced per CSV row.
+lostFrames = sum(max(sequenceDelta - 1.0, 0.0)); % Missing sequence numbers [frames].
 
 fprintf('\nMCU_Cuadcopter IMU displacement analysis\n');
 fprintf('File: %s\n', csvFile);
@@ -110,12 +110,12 @@ fprintf('Sequence losses: %.0f\n\n', lostFrames);
 
 %% Stationary sensor statistics
 
-restCount = size(restWindowsS, 1);
-accelMean = zeros(restCount, 3);
-accelStd = zeros(restCount, 3);
-gyroMean = zeros(restCount, 3);
-gyroStd = zeros(restCount, 3);
-attitudeMeanDeg = zeros(restCount, 2);
+restCount = size(restWindowsS, 1);           % Number of stationary intervals.
+accelMean = zeros(restCount, 3);             % XYZ interval means [m/s^2].
+accelStd = zeros(restCount, 3);              % XYZ interval std. deviations [m/s^2].
+gyroMean = zeros(restCount, 3);              % XYZ interval means [rad/s].
+gyroStd = zeros(restCount, 3);               % XYZ interval std. deviations [rad/s].
+attitudeMeanDeg = zeros(restCount, 2);       % Mean roll and pitch [deg].
 
 for index = 1:restCount
     mask = timeS >= restWindowsS(index, 1) & ...
@@ -152,14 +152,14 @@ disp(restStatistics);
 
 %% Integrate each known table movement
 
-eventCount = size(eventWindowsS, 1);
-baselineDisplacementM = zeros(eventCount, 2);
-attitudeDisplacementM = zeros(eventCount, 2);
-gyroDisplacementM = zeros(eventCount, 2);
-baselineResidualVelocityMps = zeros(eventCount, 2);
-attitudeResidualVelocityMps = zeros(eventCount, 2);
-gyroResidualVelocityMps = zeros(eventCount, 2);
-eventResult = repmat(struct(), eventCount, 1);
+eventCount = size(eventWindowsS, 1); % Number of known displacement events.
+baselineDisplacementM = zeros(eventCount, 2); % Baseline-method endpoint XY [m].
+attitudeDisplacementM = zeros(eventCount, 2); % Attitude-method endpoint XY [m].
+gyroDisplacementM = zeros(eventCount, 2);     % Gyro-method endpoint XY [m].
+baselineResidualVelocityMps = zeros(eventCount, 2); % Raw endpoint XY speed [m/s].
+attitudeResidualVelocityMps = zeros(eventCount, 2); % Raw endpoint XY speed [m/s].
+gyroResidualVelocityMps = zeros(eventCount, 2);     % Raw endpoint XY speed [m/s].
+eventResult = repmat(struct(), eventCount, 1); % Per-event traces returned to caller.
 
 for index = 1:eventCount
     eventStartS = eventWindowsS(index, 1);

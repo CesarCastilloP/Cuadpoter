@@ -10,5 +10,12 @@ ti_appdata/
 __pycache__/
 *.py[cod]
 
+# Local flight captures and generated PID-analysis reports
+tools/*.csv
+tools/PID_Comparison_Output/
+
+# Accidental Windows copy of this file without the leading dot
+/gitignore
+
 # Unrelated launch configuration copied from another project
 .launches/MCU_Maestro_LittleFinger.launch

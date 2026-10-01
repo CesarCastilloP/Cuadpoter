@@ -1,6 +1,6 @@
 """Real-time flight telemetry dashboard for MCU_Cuadcopter.
 
-The application decodes schema 6 emitted by ``src/telemetry.c``.  It uses a
+The application decodes schema 7 emitted by ``src/telemetry.c``.  It uses a
 background thread for the serial port and keeps every Tk operation in the main
 thread.  The plots are drawn with Tk Canvas so Spyder only needs ``pyserial``;
 NumPy, Matplotlib and Qt are intentionally not required.
@@ -35,19 +35,28 @@ except ModuleNotFoundError:  # The demo and decoder remain usable without it.
     list_ports = None
 
 
+# User-visible title for the final telemetry application window.
 APP_TITLE = "MCU Cuadcopter · Telemetría de vuelo"
+# UART0 rate configured by Telemetry_Init(), in bits per second.
 DEFAULT_BAUD_RATE = 460_800
+# Nominal frame generation rate used for link-quality indication, in hertz.
 EXPECTED_OUTPUT_RATE_HZ = 100.0
+# Little-endian synchronization marker at byte offset zero of every frame.
 SYNC_WORD = 0xA55A3CC3
 SYNC_BYTES = struct.pack("<I", SYNC_WORD)
-SCHEMA_VERSION = 6
-FRAME_STRUCT = struct.Struct("<IIIQ51f")
-FRAME_SIZE = FRAME_STRUCT.size
+# Wire-layout revision; must match TELEMETRY_SCHEMA_VERSION in telemetry.h.
+SCHEMA_VERSION = 7
+# Header: sync/version/sequence (uint32), time (uint64), then 53 float32 values.
+FRAME_STRUCT = struct.Struct("<IIIQ53f")
+FRAME_SIZE = FRAME_STRUCT.size  # Complete wire-frame length, in bytes.
+# Maximum in-memory history: 120 seconds at the nominal 100 Hz frame rate.
 MAX_HISTORY_SAMPLES = 12_000
+# pyserial blocking-read bound, in seconds, so its thread can stop promptly.
 SERIAL_READ_TIMEOUT_S = 0.050
+# Maximum age of the latest valid frame before the GUI reports link loss.
 LINK_TIMEOUT_S = 0.500
 
-if FRAME_SIZE != 224:
+if FRAME_SIZE != 232:
     raise RuntimeError(f"Unexpected telemetry frame size: {FRAME_SIZE}")
 
 
@@ -82,11 +91,11 @@ SERIES_COLORS = (
 class SignalDefinition:
     """Describes one float32 field in the fixed telemetry frame."""
 
-    key: str
-    label: str
-    unit: str
-    group: str
-    decimals: int = 3
+    key: str       # Stable protocol/CSV column name.
+    label: str     # Spanish user-visible description.
+    unit: str      # Engineering unit displayed beside the value.
+    group: str     # Table section containing this signal.
+    decimals: int = 3  # Decimal places used in the live value table.
 
 
 SIGNALS: Tuple[SignalDefinition, ...] = (
@@ -117,6 +126,8 @@ SIGNALS: Tuple[SignalDefinition, ...] = (
     SignalDefinition("roll_angle", "Ángulo roll", "°", "Actitud"),
     SignalDefinition("pitch_angle", "Ángulo pitch", "°", "Actitud"),
     SignalDefinition("throttle_setpoint", "Throttle", "0…1", "Setpoints"),
+    SignalDefinition("flight_roll_trim_deg", "Flight trim roll", "°", "Setpoints"),
+    SignalDefinition("flight_pitch_trim_deg", "Flight trim pitch", "°", "Setpoints"),
     SignalDefinition("roll_angle_setpoint", "Setpoint ángulo roll", "°", "Setpoints"),
     SignalDefinition("pitch_angle_setpoint", "Setpoint ángulo pitch", "°", "Setpoints"),
     SignalDefinition("roll_rate_setpoint", "Setpoint rate roll", "°/s", "Setpoints"),
@@ -151,16 +162,18 @@ SIGNAL_BY_KEY = {signal.key: signal for signal in SIGNALS}
 class TelemetryFrame:
     """One completely decoded frame."""
 
-    sync: int
-    schema_version: int
-    sequence: int
-    timestamp_us: int
-    values: Tuple[float, ...]
+    sync: int                  # Constant synchronization word.
+    schema_version: int        # Firmware wire-layout revision.
+    sequence: int              # Wrapping uint32 frame counter.
+    timestamp_us: int          # MCU monotonic generation time, microseconds.
+    values: Tuple[float, ...]  # 53 engineering values in SIGNALS order.
 
     def value(self, key: str) -> float:
+        """Return one engineering value selected by its stable signal key."""
         return self.values[SIGNAL_KEYS.index(key)]
 
     def as_dict(self) -> Dict[str, float]:
+        """Map every stable signal key to the corresponding frame value."""
         return dict(zip(SIGNAL_KEYS, self.values))
 
 
@@ -168,13 +181,17 @@ class TelemetryDecoder:
     """Incrementally finds and decodes frames from an arbitrary byte stream."""
 
     def __init__(self) -> None:
+        # buffer retains incomplete bytes between arbitrary serial reads.
+        """Initialize an empty stream buffer and zero all lifetime decoder counters."""
         self.buffer = bytearray()
+        # Lifetime diagnostics displayed in the protocol/diagnostics tab.
         self.frames_decoded = 0
         self.bytes_discarded = 0
         self.resync_count = 0
         self.invalid_frame_count = 0
 
     def reset(self) -> None:
+        """Discard buffered bytes and clear all decoder diagnostics."""
         self.buffer.clear()
         self.frames_decoded = 0
         self.bytes_discarded = 0
@@ -253,6 +270,8 @@ class CsvRecorder:
     )
 
     def __init__(self, path: Path) -> None:
+        # newline="" delegates CSV newline handling to Python on Windows.
+        """Open path for UTF-8 CSV output, write the 59-column header, and start the row count."""
         self.path = path
         self._file = path.open("w", newline="", encoding="utf-8")
         self._writer = csv.writer(self._file)
@@ -260,6 +279,7 @@ class CsvRecorder:
         self.rows_written = 0
 
     def write(self, frame: TelemetryFrame, host_elapsed_s: float) -> None:
+        """Append one decoded frame and periodically flush it to disk."""
         self._writer.writerow(
             (
                 datetime.now().astimezone().isoformat(timespec="milliseconds"),
@@ -276,6 +296,7 @@ class CsvRecorder:
             self._file.flush()
 
     def close(self) -> None:
+        """Flush and close the output file; repeated calls are harmless."""
         if not self._file.closed:
             self._file.flush()
             self._file.close()
@@ -285,6 +306,8 @@ class TelemetryHistory:
     """Keeps a bounded, timestamp-aligned history for plots and export."""
 
     def __init__(self, maximum_samples: int = MAX_HISTORY_SAMPLES) -> None:
+        # All deques use the same bound so time and signals remain aligned.
+        """Allocate equally bounded time, frame, and signal deques; maximum_samples is a sample count."""
         self.times: Deque[float] = deque(maxlen=maximum_samples)
         self.series: Dict[str, Deque[float]] = {
             key: deque(maxlen=maximum_samples) for key in SIGNAL_KEYS
@@ -296,6 +319,7 @@ class TelemetryHistory:
         self.last_timestamp_us: Optional[int] = None
 
     def clear(self) -> None:
+        """Remove history and timestamp origins after reset or user request."""
         self.times.clear()
         for values in self.series.values():
             values.clear()
@@ -329,6 +353,7 @@ class TelemetryHistory:
     def plot_data(
         self, keys: Sequence[str], window_s: float
     ) -> Tuple[List[float], Dict[str, List[float]]]:
+        """Return aligned samples inside the requested trailing time window."""
         if not self.times:
             return [], {key: [] for key in keys}
 
@@ -371,6 +396,7 @@ class SerialReader(threading.Thread):
         baud_rate: int,
         event_queue: queue.Queue,
     ) -> None:
+        """Store the COM name, baud rate in bit/s, GUI event queue, decoder, and stop event."""
         super().__init__(daemon=True, name="TelemetrySerialReader")
         self.port = port
         self.baud_rate = baud_rate
@@ -380,9 +406,11 @@ class SerialReader(threading.Thread):
         self.bytes_received = 0
 
     def stop(self) -> None:
+        """Request that the serial background thread finish after its current bounded read."""
         self.stop_event.set()
 
     def run(self) -> None:
+        """Open 8N1 serial input, decode incoming bytes, and enqueue frames until stop is requested."""
         if serial is None:
             _queue_event(
                 self.event_queue,
@@ -444,14 +472,17 @@ class DemoReader(threading.Thread):
     """Produces deterministic flight-like data for UI and CSV validation."""
 
     def __init__(self, event_queue: queue.Queue) -> None:
+        """Create a synthetic 100 Hz telemetry producer connected to the GUI event queue."""
         super().__init__(daemon=True, name="TelemetryDemoReader")
         self.event_queue = event_queue
         self.stop_event = threading.Event()
 
     def stop(self) -> None:
+        """Request that the demonstration thread stop producing synthetic frames."""
         self.stop_event.set()
 
     def run(self) -> None:
+        """Generate and enqueue realistic demonstration frames at the nominal telemetry rate."""
         _queue_event(self.event_queue, ("opened", "DEMO"))
         start = time.monotonic()
         next_sample = start
@@ -475,6 +506,7 @@ class DemoReader(threading.Thread):
 
     @staticmethod
     def _create_frame(sequence: int, elapsed: float) -> TelemetryFrame:
+        """Create one deterministic synthetic TelemetryFrame for sequence and elapsed seconds."""
         roll_sp = 10.0 * math.sin(elapsed * 0.55)
         pitch_sp = 8.0 * math.sin(elapsed * 0.39 + 0.8)
         roll_angle = 8.8 * math.sin(elapsed * 0.55 - 0.10)
@@ -565,6 +597,8 @@ class DemoReader(threading.Thread):
             roll_angle,
             pitch_angle,
             throttle,
+            0.0,  # Flight roll trim, degrees.
+            0.0,  # Flight pitch trim, degrees.
             roll_sp,
             pitch_sp,
             roll_rate_sp,
@@ -600,6 +634,7 @@ class MetricCard(tk.Frame):
     """Compact dashboard card with a title, value and supporting caption."""
 
     def __init__(self, master: tk.Misc, title: str, accent: str) -> None:
+        """Build one labeled dashboard metric card using the requested accent color."""
         super().__init__(
             master,
             bg=COLORS["surface"],
@@ -634,15 +669,18 @@ class MetricCard(tk.Frame):
         self.caption_label.pack(anchor="w")
 
     def set(self, value: str, caption: str = "", color: Optional[str] = None) -> None:
+        """Display a value, caption, and optional foreground color on this metric card."""
         self.value_label.configure(text=value, fg=color or self.accent)
         self.caption_label.configure(text=caption)
 
 
 @dataclass(frozen=True)
 class PlotSeries:
-    key: str
-    label: str
-    color: str
+    """Visual definition for one signal drawn by LivePlot."""
+
+    key: str    # SIGNALS key used to retrieve history values.
+    label: str  # Short legend label.
+    color: str  # Tk-compatible hexadecimal line color.
 
 
 class LivePlot(tk.Canvas):
@@ -656,6 +694,7 @@ class LivePlot(tk.Canvas):
         series: Sequence[PlotSeries],
         fixed_limits: Optional[Tuple[float, float]] = None,
     ) -> None:
+        """Create a Canvas plot with title, units, series definitions, and optional fixed Y range."""
         super().__init__(
             master,
             bg=COLORS["surface"],
@@ -673,11 +712,13 @@ class LivePlot(tk.Canvas):
     def set_data(
         self, times: Sequence[float], values: Dict[str, Sequence[float]]
     ) -> None:
+        """Replace plotted time/value arrays and redraw the selected time window in seconds."""
         self.times = times
         self.values = values
         self.redraw()
 
     def redraw(self) -> None:
+        """Render grid, axes, legend, and all finite samples onto the current Canvas size."""
         self.delete("all")
         width = max(self.winfo_width(), 320)
         height = max(self.winfo_height(), 220)
@@ -833,6 +874,7 @@ class AttitudeIndicator(tk.Canvas):
     """Simple artificial horizon for roll and pitch feedback."""
 
     def __init__(self, master: tk.Misc) -> None:
+        """Create the roll/pitch artificial-horizon canvas with zero-degree initial attitude."""
         super().__init__(
             master,
             width=300,
@@ -846,11 +888,13 @@ class AttitudeIndicator(tk.Canvas):
         self.bind("<Configure>", lambda _event: self.redraw())
 
     def set_attitude(self, roll_deg: float, pitch_deg: float) -> None:
+        """Store roll and pitch in degrees and redraw the artificial horizon."""
         self.roll_deg = roll_deg
         self.pitch_deg = pitch_deg
         self.redraw()
 
     def redraw(self) -> None:
+        """Render horizon rotation, pitch displacement, aircraft mark, and numeric angles."""
         self.delete("all")
         width = max(self.winfo_width(), 260)
         height = max(self.winfo_height(), 220)
@@ -931,6 +975,7 @@ class MotorIndicator(tk.Canvas):
     )
 
     def __init__(self, master: tk.Misc) -> None:
+        """Create the four-motor top-view canvas with pulses initialized to 1000 microseconds."""
         super().__init__(
             master,
             width=320,
@@ -943,12 +988,14 @@ class MotorIndicator(tk.Canvas):
         self.bind("<Configure>", lambda _event: self.redraw())
 
     def set_motors(self, values: Dict[str, float]) -> None:
+        """Store four ESC high times in microseconds and redraw their indicators."""
         for key in self.motor_values:
             if key in values:
                 self.motor_values[key] = values[key]
         self.redraw()
 
     def redraw(self) -> None:
+        """Render motor positions, pin labels, pulse values, and normalized pulse arcs."""
         self.delete("all")
         width = max(self.winfo_width(), 280)
         height = max(self.winfo_height(), 220)
@@ -1106,7 +1153,7 @@ class TelemetryDashboard(tk.Tk):
                 PlotSeries("drift_roll_correction", "Roll", SERIES_COLORS[0]),
                 PlotSeries("drift_pitch_correction", "Pitch", SERIES_COLORS[1]),
             ),
-            (-2.5, 2.5),
+            (-3.5, 3.5),
         ),
         (
             "Tasas",
@@ -1195,6 +1242,7 @@ class TelemetryDashboard(tk.Tk):
     )
 
     def __init__(self) -> None:
+        """Construct the application state, widgets, update timer, and orderly close handler."""
         super().__init__()
         self.title(APP_TITLE)
         self.geometry("1480x900")
@@ -1239,6 +1287,7 @@ class TelemetryDashboard(tk.Tk):
         self.after(100, self._refresh_dashboard)
 
     def _configure_styles(self) -> None:
+        """Define the ttk colors, fonts, spacing, and states used by the final interface."""
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("TFrame", background=COLORS["background"])
@@ -1326,6 +1375,7 @@ class TelemetryDashboard(tk.Tk):
         style.map("Treeview", background=[("selected", "#174665")])
 
     def _build_interface(self) -> None:
+        """Create the complete header, metrics, tabs, plots, tables, and recording controls."""
         header = tk.Frame(self, bg=COLORS["surface"], padx=18, pady=12)
         header.pack(fill="x")
         title_block = tk.Frame(header, bg=COLORS["surface"])
@@ -1590,6 +1640,7 @@ class TelemetryDashboard(tk.Tk):
             self.sensor_plots.append((plot, tuple(item.key for item in series)))
 
     def _build_values_tab(self, parent: ttk.Frame) -> None:
+        """Create the scrollable table containing every decoded engineering signal."""
         container = ttk.Frame(parent, padding=10)
         container.pack(fill="both", expand=True)
         columns = ("group", "field", "value", "unit")
@@ -1630,6 +1681,7 @@ class TelemetryDashboard(tk.Tk):
             )
 
     def _build_diagnostics_tab(self, parent: ttk.Frame) -> None:
+        """Create protocol counters, data-age values, and decoder diagnostic controls."""
         parent.columnconfigure(0, weight=1)
         parent.columnconfigure(1, weight=1)
         parent.rowconfigure(0, weight=1)
@@ -1727,6 +1779,7 @@ class TelemetryDashboard(tk.Tk):
         ).pack(anchor="w", pady=(14, 0))
 
     def _refresh_ports(self) -> None:
+        """Enumerate serial ports and preserve the current selection when possible."""
         if list_ports is None:
             self.port_combo["values"] = ()
             self.port_variable.set("")
@@ -1756,6 +1809,7 @@ class TelemetryDashboard(tk.Tk):
             self.status_variable.set("No se encontraron puertos seriales.")
 
     def _toggle_connection(self) -> None:
+        """Connect to the selected COM port or disconnect the currently active reader."""
         if self.reader is not None:
             self._stop_reader("Desconectando…")
             return
@@ -1791,6 +1845,7 @@ class TelemetryDashboard(tk.Tk):
         self.demo_button.configure(state="disabled")
 
     def _start_demo(self) -> None:
+        """Replace any real reader with a synthetic source for hardware-free UI testing."""
         if self.reader is not None:
             self._stop_reader("Cambiando a modo demo…")
             self.after(150, self._start_demo)
@@ -1803,6 +1858,7 @@ class TelemetryDashboard(tk.Tk):
         self.demo_button.configure(state="disabled")
 
     def _prepare_new_connection(self, source: str) -> None:
+        """Reset timestamps, counters, plots, and labels for the named data source."""
         self.history.clear()
         self.latest_frame = None
         self.latest_values.clear()
@@ -1818,11 +1874,13 @@ class TelemetryDashboard(tk.Tk):
         self.current_source = source
 
     def _stop_reader(self, message: str = "Desconectando…") -> None:
+        """Signal the active reader to stop and update the connection status message."""
         if self.reader is not None and hasattr(self.reader, "stop"):
             self.reader.stop()  # type: ignore[attr-defined]
         self.status_variable.set(message)
 
     def _process_events(self) -> None:
+        """Drain cross-thread events on the Tk thread and schedule the next GUI service."""
         processed = 0
         while processed < 600:
             try:
@@ -1858,6 +1916,7 @@ class TelemetryDashboard(tk.Tk):
         self.after(20, self._process_events)
 
     def _handle_frame(self, frame: TelemetryFrame) -> None:
+        """Accept one decoded frame, update loss counters/history, and optionally write CSV."""
         now = time.monotonic()
         host_elapsed_s = now - self.connection_started_monotonic
         self.received_frames += 1
@@ -1889,6 +1948,7 @@ class TelemetryDashboard(tk.Tk):
                 messagebox.showerror("Error CSV", str(exc))
 
     def _measured_rate(self, now: float) -> float:
+        """Calculate received frames per second over a recent host-time window."""
         while self.rate_times and now - self.rate_times[0] > 2.0:
             self.rate_times.popleft()
         if len(self.rate_times) < 2:
@@ -1897,6 +1957,7 @@ class TelemetryDashboard(tk.Tk):
         return (len(self.rate_times) - 1) / duration if duration > 0 else 0.0
 
     def _refresh_dashboard(self) -> None:
+        """Refresh every visible metric, table, plot, and diagnostic from current state."""
         now = time.monotonic()
         age = (
             now - self.last_frame_monotonic
@@ -1994,6 +2055,7 @@ class TelemetryDashboard(tk.Tk):
         self.after(100, self._refresh_dashboard)
 
     def _update_indicators(self) -> None:
+        """Update the artificial horizon and four motor pulse visualization."""
         self.attitude_indicator.set_attitude(
             self.latest_values["roll_angle"],
             self.latest_values["pitch_angle"],
@@ -2001,6 +2063,7 @@ class TelemetryDashboard(tk.Tk):
         self.motor_indicator.set_motors(self.latest_values)
 
     def _update_value_table(self) -> None:
+        """Write the latest value and unit for each of the 53 signals into the table."""
         frame = self.latest_frame
         if frame is None:
             return
@@ -2021,6 +2084,7 @@ class TelemetryDashboard(tk.Tk):
             self.value_tree.item(f"signal_{signal.key}", values=row)
 
     def _update_plots(self) -> None:
+        """Feed the selected history window to every flight and sensor plot."""
         try:
             window_s = float(self.window_variable.get())
         except ValueError:
@@ -2039,6 +2103,7 @@ class TelemetryDashboard(tk.Tk):
         plot.set_data(times, values)
 
     def _update_diagnostics(self) -> None:
+        """Publish decoder counts, frame age, timestamp delta, and connection information."""
         values = {
             "source": self.current_source or "—",
             **self.decoder_statistics,
@@ -2052,6 +2117,7 @@ class TelemetryDashboard(tk.Tk):
             label.configure(text=f"{values.get(key, 0):,}" if isinstance(values.get(key), int) else str(values.get(key)))
 
     def _toggle_recording(self) -> None:
+        """Start a user-selected CSV recording or stop and close the active recording."""
         if self.recorder is not None:
             path = self.recorder.path
             rows = self.recorder.rows_written
@@ -2078,6 +2144,7 @@ class TelemetryDashboard(tk.Tk):
         self.status_variable.set(f"Grabando CSV: {self.recorder.path.name}")
 
     def _stop_recording(self) -> None:
+        """Flush/close the current CSV recorder and return the recording controls to idle."""
         if self.recorder is not None:
             self.recorder.close()
             self.recorder = None
@@ -2085,6 +2152,7 @@ class TelemetryDashboard(tk.Tk):
         self.record_button.configure(text="● Grabar CSV", style="TButton")
 
     def _export_history(self) -> None:
+        """Write the complete in-memory history to a user-selected CSV file."""
         if not self.history.frames:
             messagebox.showinfo("Sin datos", "Todavía no hay muestras para exportar.")
             return
@@ -2109,11 +2177,13 @@ class TelemetryDashboard(tk.Tk):
         self.status_variable.set(f"Historial exportado: {rows} filas")
 
     def _clear_history(self) -> None:
+        """Discard plotted/exportable history while preserving the active connection."""
         self.history.clear()
         self.timestamp_gap_count = 0
         self.status_variable.set("Historial de gráficas limpiado.")
 
     def _on_close(self) -> None:
+        """Stop reader and recorder resources before destroying the Tk application window."""
         self._stop_recording()
         if self.reader is not None and hasattr(self.reader, "stop"):
             self.reader.stop()  # type: ignore[attr-defined]

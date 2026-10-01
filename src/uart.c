@@ -2,7 +2,23 @@
  * @file uart.c
  * @author Alberto Vazquez
  *
- * @brief Source file uart, C code for UART module
+ * @brief DriverLib UART initialization, polling I/O, and interrupt callbacks.
+ *
+ * All eight UART blocks use the 16 MHz precision internal oscillator (PIOSC),
+ * 8 data bits, no parity, and one stop bit.  Receive callbacks run directly in
+ * interrupt context and therefore must remain short and non-blocking.  Polling
+ * read timeouts are iteration counts rather than milliseconds.  Blocking send
+ * functions are intended for setup/debug use; flight telemetry uses the UART0
+ * non-blocking FIFO writer.
+ *
+ * Beginner's reading guide:
+ * - Each numbered UART family exposes the same operations: Init configures pins
+ *   and baud rate, Sendbyte/Sendstring transmit, ReadByte/ReadBytes poll input,
+ *   Callback stores a receive handler, and the ISR drains received bytes.
+ * - A baud rate is bits per second. All active ports use 8 data bits, no parity,
+ *   one stop bit (8N1), and the 16 MHz PIOSC clock.
+ * - UART4 carries CRSF receiver bytes. UART0 carries flight telemetry through the
+ *   LaunchPad USB virtual COM port. UART0_SendAvailable is the non-blocking path.
  *
  * @version 1.1.0
  * @date 2026-09-27
@@ -26,13 +42,14 @@
 #define NULL          0
 #endif
 
+/* Callback registry shared by the eight ISR entry points. */
 uart_cb_t callbacks = {
       .rx = NULL
 };
 
-//---------------------------------UART0---------------------------------*/
-//---------------------------------UART0---------------------------------*/
-//---------------------------------UART0---------------------------------*/
+/* -------------------------------------------------------------------------- */
+/* UART0: PA0/RX and PA1/TX, connected to the LaunchPad USB virtual COM port. */
+/* -------------------------------------------------------------------------- */
 /**
  * @brief Initialize UART0
  * @param baudrate Baud rate for UART0
@@ -41,7 +58,7 @@ uart_cb_t callbacks = {
  */
 void uart0_init(uint32_t baudrate, void (*callback)(uint8_t))
 {
-    //Enable UART0 and port A
+    /* Enable UART0 and its GPIO port before accessing either register block. */
     SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
 
@@ -57,16 +74,15 @@ void uart0_init(uint32_t baudrate, void (*callback)(uint8_t))
     GPIOPinTypeUART(GPIO_PORTA_BASE,
                     GPIO_PIN_0 | GPIO_PIN_1);
 
-    //Configure UART clock and baud rate
+    /* PIOSC is a fixed 16 MHz source independent of the 120 MHz system PLL. */
     UARTClockSourceSet(UART0_BASE,
                        UART_CLOCK_PIOSC);
     UARTConfigSetExpClk(UART0_BASE,
                         16000000,
-                        //SysCtlClockGet(),   //System freq
-                        baudrate,           //Baudrare
+                        baudrate,
                         (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
 
-    // Set FIFO level
+    /* Low TX threshold maximizes room for non-blocking telemetry bursts. */
     UARTFIFOLevelSet(UART0_BASE,
                      UART_FIFO_TX1_8,
                      UART_FIFO_RX4_8);
@@ -78,12 +94,12 @@ void uart0_init(uint32_t baudrate, void (*callback)(uint8_t))
     {
         callbacks.rx[0] = callback;
         uart0_callback(callback);
-        // Enable interrupts
+        /* Register RX and receive-timeout interrupts only when callback is used. */
         UARTIntRegister(UART0_BASE, uart0_isr); //Register ISR
         UARTIntEnable(UART0_BASE,
                       UART_INT_RX | UART_INT_RT);
 
-        //Enable interrupt in NVIC
+        /* Enable UART0 delivery through the NVIC. */
         IntEnable(INT_UART0);
         IntMasterEnable();
     } else {
@@ -91,7 +107,7 @@ void uart0_init(uint32_t baudrate, void (*callback)(uint8_t))
         UARTIntDisable(UART0_BASE,
                       UART_INT_RX | UART_INT_RT);
 
-        //Enable interrupt in NVIC
+        /* Keep polling-only operation free of unused UART0 interrupts. */
         IntDisable(INT_UART0);
     }
     //Enable UART0
@@ -114,7 +130,7 @@ void UART0_Sendbyte(uint8_t data)
  */
 void UART0_Sendstring(const uint8_t* str, uint16_t length)
 {
-    uint16_t i;
+    uint16_t i; /* Number of bytes already sent from str. */
     for (i=0;i<length;i++)
     {
         UARTCharPut(UART0_BASE,
@@ -128,7 +144,7 @@ void UART0_Sendstring(const uint8_t* str, uint16_t length)
  */
 uint32_t UART0_SendAvailable(const uint8_t* data, uint32_t length)
 {
-    uint32_t count = 0U;
+    uint32_t count = 0U; /* Bytes accepted before the hardware FIFO filled. */
 
     if(data == NULL)
     {
@@ -150,7 +166,7 @@ uint32_t UART0_SendAvailable(const uint8_t* data, uint32_t length)
  */
 int32_t UART0_ReadByte(uint32_t timeout)
 {
-    int32_t data = -1;
+    int32_t data = -1; /* Received byte [0,255], or -1 when none arrives. */
     while(timeout > 0)
     {
        if(UARTCharsAvail(UART0_BASE))
@@ -172,8 +188,8 @@ int32_t UART0_ReadByte(uint32_t timeout)
  */
 uint32_t UART0_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout)
 {
-    uint32_t cont = 0;
-    int32_t data = -1;
+    uint32_t cont = 0; /* Bytes copied into the caller's buffer. */
+    int32_t data = -1; /* Most recent byte or the -1 timeout sentinel. */
 
     while(cont < length && timeout > 0)
     {
@@ -201,17 +217,18 @@ void uart0_callback(uart_callback_t cb)
  */
 void uart0_isr(void)
 {
+    /* Masked interrupt-cause bits that must be cleared before draining RX FIFO. */
     uint32_t status = UARTIntStatus(UART0_BASE, true);
     UARTIntClear(UART0_BASE, status);
 
     while(UARTCharsAvail(UART0_BASE))
     {
-        int32_t c = UARTCharGetNonBlocking(UART0_BASE);
+        int32_t c = UARTCharGetNonBlocking(UART0_BASE); /* Byte or -1 sentinel. */
         if(c == -1)
         {
             break;
         }
-        // Executes callback if exist
+        /* Dispatch one byte at a time to the protocol parser in interrupt context. */
         if(callbacks.rx[0] != NULL)
         {
             callbacks.rx[0]((uint8_t)c);
@@ -303,7 +320,7 @@ void UART1_Sendbyte(uint8_t data)
  */
 void UART1_Sendstring(const uint8_t* str, uint16_t length)
 {
-    uint16_t i;
+    uint16_t i; /* Number of bytes already sent from str. */
     for (i=0;i<length;i++)
     {
         UARTCharPut(UART1_BASE,
@@ -318,7 +335,7 @@ void UART1_Sendstring(const uint8_t* str, uint16_t length)
  */
 int32_t UART1_ReadByte(uint32_t timeout)
 {
-    int32_t data = -1;
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
     while(timeout > 0)
     {
        if(UARTCharsAvail(UART1_BASE))
@@ -340,8 +357,8 @@ int32_t UART1_ReadByte(uint32_t timeout)
  */
 uint32_t UART1_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout)
 {
-    uint32_t cont = 0;
-    int32_t data = -1;
+    uint32_t cont = 0; /* Bytes copied into the caller's buffer. */
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
 
     while(cont < length && timeout > 0)
     {
@@ -369,12 +386,12 @@ void uart1_callback(uart_callback_t cb)
  */
 void uart1_isr(void)
 {
-    uint32_t status = UARTIntStatus(UART1_BASE, true);
+    uint32_t status = UARTIntStatus(UART1_BASE, true); /* IRQ cause bits. */
     UARTIntClear(UART1_BASE, status);
 
     while(UARTCharsAvail(UART1_BASE))
     {
-        int32_t c = UARTCharGetNonBlocking(UART1_BASE);
+        int32_t c = UARTCharGetNonBlocking(UART1_BASE); /* Byte or -1. */
         if(c == -1)
         {
             break;
@@ -474,7 +491,7 @@ void UART2_Sendbyte(uint8_t data)
  */
 void UART2_Sendstring(const uint8_t* str, uint16_t length)
 {
-    uint16_t i;
+    uint16_t i; /* Number of bytes already sent from str. */
     for (i=0;i<length;i++)
     {
         UARTCharPut(UART2_BASE,
@@ -489,7 +506,7 @@ void UART2_Sendstring(const uint8_t* str, uint16_t length)
  */
 int32_t UART2_ReadByte(uint32_t timeout)
 {
-    int32_t data = -1;
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
     while(timeout > 0)
     {
        if(UARTCharsAvail(UART2_BASE))
@@ -511,8 +528,8 @@ int32_t UART2_ReadByte(uint32_t timeout)
  */
 uint32_t UART2_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout)
 {
-    uint32_t cont = 0;
-    int32_t data = -1;
+    uint32_t cont = 0; /* Bytes copied into the caller's buffer. */
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
 
     while(cont < length && timeout > 0)
     {
@@ -541,12 +558,12 @@ void uart2_callback(uart_callback_t cb)
  */
 void uart2_isr(void)
 {
-    uint32_t status = UARTIntStatus(UART2_BASE, true);
+    uint32_t status = UARTIntStatus(UART2_BASE, true); /* IRQ cause bits. */
     UARTIntClear(UART2_BASE, status);
 
     while(UARTCharsAvail(UART2_BASE))
     {
-        int32_t c = UARTCharGetNonBlocking(UART2_BASE);
+        int32_t c = UARTCharGetNonBlocking(UART2_BASE); /* Byte or -1. */
         if(c == -1)
         {
             break;
@@ -641,7 +658,7 @@ void UART3_Sendbyte(uint8_t data)
  */
 void UART3_Sendstring(const uint8_t* str, uint16_t length)
 {
-    uint16_t i;
+    uint16_t i; /* Number of bytes already sent from str. */
     for (i=0;i<length;i++)
     {
         UARTCharPut(UART3_BASE,
@@ -656,7 +673,7 @@ void UART3_Sendstring(const uint8_t* str, uint16_t length)
  */
 int32_t UART3_ReadByte(uint32_t timeout)
 {
-    int32_t data = -1;
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
     while(timeout > 0)
     {
        if(UARTCharsAvail(UART3_BASE))
@@ -678,8 +695,8 @@ int32_t UART3_ReadByte(uint32_t timeout)
  */
 uint32_t UART3_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout)
 {
-    uint32_t cont = 0;
-    int32_t data = -1;
+    uint32_t cont = 0; /* Bytes copied into the caller's buffer. */
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
 
     while(cont < length && timeout > 0)
     {
@@ -708,12 +725,12 @@ void uart3_callback(uart_callback_t cb)
  */
 void uart3_isr(void)
 {
-    uint32_t status = UARTIntStatus(UART3_BASE, true);
+    uint32_t status = UARTIntStatus(UART3_BASE, true); /* IRQ cause bits. */
     UARTIntClear(UART3_BASE, status);
 
     while(UARTCharsAvail(UART3_BASE))
     {
-        int32_t c = UARTCharGetNonBlocking(UART3_BASE);
+        int32_t c = UARTCharGetNonBlocking(UART3_BASE); /* Byte or -1. */
         if(c == -1)
         {
             break;
@@ -813,7 +830,7 @@ void UART4_Sendbyte(uint8_t data)
  */
 void UART4_Sendstring(const uint8_t* str, uint16_t length)
 {
-    uint16_t i;
+    uint16_t i; /* Number of bytes already sent from str. */
     for (i=0;i<length;i++)
     {
         UARTCharPut(UART4_BASE,
@@ -828,7 +845,7 @@ void UART4_Sendstring(const uint8_t* str, uint16_t length)
  */
 int32_t UART4_ReadByte(uint32_t timeout)
 {
-    int32_t data = -1;
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
     while(timeout > 0)
     {
        if(UARTCharsAvail(UART4_BASE))
@@ -850,8 +867,8 @@ int32_t UART4_ReadByte(uint32_t timeout)
  */
 uint32_t UART4_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout)
 {
-    uint32_t cont = 0;
-    int32_t data = -1;
+    uint32_t cont = 0; /* Bytes copied into the caller's buffer. */
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
 
     while(cont < length && timeout > 0)
     {
@@ -880,12 +897,12 @@ void uart4_callback(uart_callback_t cb)
  */
 void uart4_isr(void)
 {
-    uint32_t status = UARTIntStatus(UART4_BASE, true);
+    uint32_t status = UARTIntStatus(UART4_BASE, true); /* IRQ cause bits. */
     UARTIntClear(UART4_BASE, status);
 
     while(UARTCharsAvail(UART4_BASE))
     {
-        int32_t c = UARTCharGetNonBlocking(UART4_BASE);
+        int32_t c = UARTCharGetNonBlocking(UART4_BASE); /* Byte or -1. */
         if(c == -1)
         {
             break;
@@ -985,7 +1002,7 @@ void UART5_Sendbyte(uint8_t data)
  */
 void UART5_Sendstring(const uint8_t* str, uint16_t length)
 {
-    uint16_t i;
+    uint16_t i; /* Number of bytes already sent from str. */
     for (i=0;i<length;i++)
     {
         UARTCharPut(UART5_BASE,
@@ -1000,7 +1017,7 @@ void UART5_Sendstring(const uint8_t* str, uint16_t length)
  */
 int32_t UART5_ReadByte(uint32_t timeout)
 {
-    int32_t data = -1;
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
     while(timeout > 0)
     {
        if(UARTCharsAvail(UART5_BASE))
@@ -1022,8 +1039,8 @@ int32_t UART5_ReadByte(uint32_t timeout)
  */
 uint32_t UART5_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout)
 {
-    uint32_t cont = 0;
-    int32_t data = -1;
+    uint32_t cont = 0; /* Bytes copied into the caller's buffer. */
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
 
     while(cont < length && timeout > 0)
     {
@@ -1052,12 +1069,12 @@ void uart5_callback(uart_callback_t cb)
  */
 void uart5_isr(void)
 {
-    uint32_t status = UARTIntStatus(UART5_BASE, true);
+    uint32_t status = UARTIntStatus(UART5_BASE, true); /* IRQ cause bits. */
     UARTIntClear(UART5_BASE, status);
 
     while(UARTCharsAvail(UART5_BASE))
     {
-        int32_t c = UARTCharGetNonBlocking(UART5_BASE);
+        int32_t c = UARTCharGetNonBlocking(UART5_BASE); /* Byte or -1. */
         if(c == -1)
         {
             break;
@@ -1157,7 +1174,7 @@ void UART6_Sendbyte(uint8_t data)
  */
 void UART6_Sendstring(const uint8_t* str, uint16_t length)
 {
-    uint16_t i;
+    uint16_t i; /* Number of bytes already sent from str. */
     for (i=0;i<length;i++)
     {
         UARTCharPut(UART6_BASE,
@@ -1172,7 +1189,7 @@ void UART6_Sendstring(const uint8_t* str, uint16_t length)
  */
 int32_t UART6_ReadByte(uint32_t timeout)
 {
-    int32_t data = -1;
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
     while(timeout > 0)
     {
        if(UARTCharsAvail(UART6_BASE))
@@ -1194,8 +1211,8 @@ int32_t UART6_ReadByte(uint32_t timeout)
  */
 uint32_t UART6_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout)
 {
-    uint32_t cont = 0;
-    int32_t data = -1;
+    uint32_t cont = 0; /* Bytes copied into the caller's buffer. */
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
 
     while(cont < length && timeout > 0)
     {
@@ -1223,12 +1240,12 @@ void uart6_callback(uart_callback_t cb)
  */
 void uart6_isr(void)
 {
-    uint32_t status = UARTIntStatus(UART6_BASE, true);
+    uint32_t status = UARTIntStatus(UART6_BASE, true); /* IRQ cause bits. */
     UARTIntClear(UART6_BASE, status);
 
     while(UARTCharsAvail(UART6_BASE))
     {
-        int32_t c = UARTCharGetNonBlocking(UART6_BASE);
+        int32_t c = UARTCharGetNonBlocking(UART6_BASE); /* Byte or -1. */
         if(c == -1)
         {
             break;
@@ -1327,7 +1344,7 @@ void UART7_Sendbyte(uint8_t data)
  */
 void UART7_Sendstring(const uint8_t* str, uint16_t length)
 {
-    uint16_t i;
+    uint16_t i; /* Number of bytes already sent from str. */
     for (i=0;i<length;i++)
     {
         UARTCharPut(UART7_BASE,
@@ -1342,7 +1359,7 @@ void UART7_Sendstring(const uint8_t* str, uint16_t length)
  */
 int32_t UART7_ReadByte(uint32_t timeout)
 {
-    int32_t data = -1;
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
     while(timeout > 0)
     {
        if(UARTCharsAvail(UART7_BASE))
@@ -1364,8 +1381,8 @@ int32_t UART7_ReadByte(uint32_t timeout)
  */
 uint32_t UART7_ReadBytes(uint8_t* buffer, uint32_t length, uint32_t timeout)
 {
-    uint32_t cont = 0;
-    int32_t data = -1;
+    uint32_t cont = 0; /* Bytes copied into the caller's buffer. */
+    int32_t data = -1; /* Received byte [0,255], or -1 on timeout. */
 
     while(cont < length && timeout > 0)
     {
@@ -1394,12 +1411,12 @@ void uart7_callback(uart_callback_t cb)
  */
 void uart7_isr(void)
 {
-    uint32_t status = UARTIntStatus(UART7_BASE, true);
+    uint32_t status = UARTIntStatus(UART7_BASE, true); /* IRQ cause bits. */
     UARTIntClear(UART7_BASE, status);
 
     while(UARTCharsAvail(UART7_BASE))
     {
-        int32_t c = UARTCharGetNonBlocking(UART7_BASE);
+        int32_t c = UARTCharGetNonBlocking(UART7_BASE); /* Byte or -1. */
         if(c == -1)
         {
             break;

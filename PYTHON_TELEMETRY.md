@@ -1,7 +1,7 @@
 # Panel de telemetría en Python para Spyder
 
 `tools/telemetry_dashboard.py` recibe la trama binaria del firmware, muestra
-las 51 señales en tiempo real y permite grabar o exportar los datos a CSV. La
+las 53 señales en tiempo real y permite grabar o exportar los datos a CSV. La
 interfaz usa `tkinter` y gráficas propias, por lo que solo necesita `pyserial`.
 
 ## Instalación en Spyder
@@ -45,7 +45,7 @@ la interfaz, las gráficas y la exportación CSV sin conectar el microcontrolado
   locales estimados, y correcciones angulares del freno inercial.
 - Gráficas de actitud, giroscopio IMU directo, tasas angulares filtradas,
   errores PID, salidas PID, motores, aceleración y términos P/I/D por eje.
-- Tabla con cabecera y las 51 variables enviadas por el firmware.
+- Tabla con cabecera y las 53 variables enviadas por el firmware.
 - Diagnóstico de bytes, tramas, descartes y estado de la grabación.
 
 ## Grabación CSV
@@ -62,9 +62,9 @@ El CSV usa UTF-8, separador coma y punto decimal. Sus columnas son:
 1. Hora ISO del PC.
 2. Tiempo transcurrido desde la conexión.
 3. `sync`, versión, secuencia y timestamp del microcontrolador.
-4. Las 51 señales en el mismo orden de `TELEMETRY.md`, incluidos los seis
+4. Las 53 señales en el mismo orden de `TELEMETRY.md`, incluidos los seis
    valores IMU, los tres ejes magnéticos, las tres variables de heading y las
-   ocho señales del freno inercial horizontal.
+   ocho señales del freno inercial horizontal, además de los dos Flight Trim.
 
 ## Uso para análisis inercial
 
@@ -124,7 +124,7 @@ del CSV.
 - **Huecos de timestamp:** separación mayor de 15 ms entre snapshots. También
   detecta periodos que el firmware omitió antes de construir una trama.
 - **Bytes descartados:** datos anteriores a la palabra de sincronía.
-- **Candidatos inválidos:** sync encontrada con versión distinta de 6 o valores
+- **Candidatos inválidos:** sync encontrada con versión distinta de 7 o valores
   flotantes no finitos.
 - **Overflow cola PC:** la interfaz no consumió eventos tan rápido como llegaron.
 

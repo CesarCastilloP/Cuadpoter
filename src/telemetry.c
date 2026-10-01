@@ -2,6 +2,16 @@
  * @file telemetry.c
  * @author Alberto Vazquez
  * @brief Fixed-rate binary telemetry with non-blocking UART transmission.
+ *
+ * @details Beginner's reading guide:
+ * - Update snapshots current module outputs at 100 Hz into one fixed-layout
+ *   little-endian frame. Each writer_* helper appends one explicitly sized type.
+ * - service_transmitter() offers only bytes that fit in the UART0 hardware FIFO;
+ *   it never waits for room, so telemetry cannot delay the flight controller.
+ * - If a new period arrives while the previous frame is still being sent, the
+ *   new frame is counted as dropped. Existing bytes are never overwritten.
+ * - All signal units are defined in telemetry.h and TELEMETRY.md; timestamp_us
+ *   is monotonic microseconds and sequence increments once per created frame.
  * @version 1.5.0
  * @date 2026-09-29
  */
@@ -14,10 +24,10 @@
 
 typedef struct
 {
-    uint8_t *buffer;
-    uint16_t capacity;
-    uint16_t length;
-    bool valid;
+    uint8_t *buffer;    /**< Destination byte array owned by Telemetry_Data_t. */
+    uint16_t capacity;  /**< Maximum writable bytes in buffer. */
+    uint16_t length;    /**< Bytes successfully encoded so far. */
+    bool valid;         /**< False after the first attempted buffer overflow. */
 } FrameWriter_t;
 
 static void service_transmitter(Telemetry_Data_t *data);
@@ -39,10 +49,18 @@ static void writer_u32(FrameWriter_t *writer, uint32_t value);
 static void writer_u64(FrameWriter_t *writer, uint64_t value);
 static void writer_float32(FrameWriter_t *writer, float32_t value);
 
+/**
+ * @brief Initialize UART0 telemetry timing, buffers, counters, and schema state.
+ * @param data Destination transmitter instance.
+ * @param baud_rate Serial line rate [bits/second], normally 460800.
+ * @param output_rate_hz Requested frame rate [frames/second], normally 100 Hz.
+ * @return OK or an argument/UART initialization status.
+ */
 Telemetry_Status_t Telemetry_Init(Telemetry_Data_t *data,
                                   uint32_t baud_rate,
                                   uint32_t output_rate_hz)
 {
+    /* Minimum 8-N-1 line rate: bytes/frame x frames/s x 10 line bits/byte. */
     uint64_t required_baud_rate;
 
     if(data == NULL)
@@ -70,6 +88,7 @@ Telemetry_Status_t Telemetry_Init(Telemetry_Data_t *data,
     memset(data, 0, sizeof(*data));
     data->baud_rate = baud_rate;
     data->output_rate_hz = output_rate_hz;
+    /* Integer microsecond period drives an absolute, drift-free schedule. */
     data->output_period_us = 1000000ULL / (uint64_t)output_rate_hz;
     data->next_output_us = Timebase_GetMicroseconds() +
                            data->output_period_us;
@@ -80,6 +99,15 @@ Telemetry_Status_t Telemetry_Init(Telemetry_Data_t *data,
     return data->last_status;
 }
 
+/**
+ * @brief Service pending bytes and create one new snapshot when its deadline is due.
+ * @param data Initialized telemetry instance.
+ * @param imu Latest IMU instance and raw/calibrated sample.
+ * @param magnetometer Latest LIS2MDL instance and magnetic sample.
+ * @param control Latest attitude, heading, PID, trim, and drift outputs.
+ * @param motor_output Latest four commanded ESC pulses [microseconds].
+ * @return OK while operating, or an argument/not-initialized/encoding error.
+ */
 Telemetry_Status_t Telemetry_Update(
     Telemetry_Data_t *data,
     const LSM6DS_Data_t *imu,
@@ -87,6 +115,7 @@ Telemetry_Status_t Telemetry_Update(
     const FlightControl_Data_t *control,
     const MotorOutput_Data_t *motor_output)
 {
+    /* Monotonic timestamp used for scheduling and embedded in the frame header. */
     uint64_t now_us;
 
     if((data == NULL) || (imu == NULL) || (magnetometer == NULL) ||
@@ -100,6 +129,7 @@ Telemetry_Status_t Telemetry_Update(
         return data->last_status;
     }
 
+    /* Drain queued bytes first so encoding never blocks the flight loop. */
     service_transmitter(data);
     now_us = Timebase_GetMicroseconds();
     if(now_us < data->next_output_us)
@@ -127,10 +157,15 @@ Telemetry_Status_t Telemetry_Update(
     return data->last_status;
 }
 
+/**
+ * @brief Move as many pending frame bytes as possible into the UART0 FIFO.
+ * @param data Transmitter instance containing byte buffer, length, and next index.
+ * @return Nothing; the function never blocks while the FIFO is full.
+ */
 static void service_transmitter(Telemetry_Data_t *data)
 {
-    uint32_t sent;
-    uint32_t remaining;
+    uint32_t sent;      /* Bytes accepted into UART0 FIFO in this service call. */
+    uint32_t remaining; /* Encoded bytes still waiting for the UART FIFO. */
 
     if(data->tx_index >= data->tx_length)
     {
@@ -145,14 +180,22 @@ static void service_transmitter(Telemetry_Data_t *data)
     data->bytes_transmitted += sent;
 }
 
+/**
+ * @brief Advance the absolute telemetry deadline and count periods that were missed.
+ * @param data Instance containing period, deadline, and dropped-frame counter.
+ * @param now_us Current monotonic time [microseconds].
+ * @param frame_will_be_created true when this due period produces a new frame.
+ * @return Nothing; next_frame_due_us is advanced beyond now_us.
+ */
 static void account_due_periods(Telemetry_Data_t *data,
                                 uint64_t now_us,
                                 bool frame_will_be_created)
 {
-    uint64_t elapsed_periods;
-    uint64_t dropped_periods;
-    uint32_t available_count;
+    uint64_t elapsed_periods; /* Number of scheduled frame slots now due. */
+    uint64_t dropped_periods; /* Due slots that cannot receive a frame. */
+    uint32_t available_count; /* Counter headroom before uint32 saturation. */
 
+    /* Advance by whole periods from the old deadline to avoid schedule drift. */
     elapsed_periods =
         ((now_us - data->next_output_us) / data->output_period_us) + 1ULL;
     data->next_output_us += elapsed_periods * data->output_period_us;
@@ -170,6 +213,16 @@ static void account_due_periods(Telemetry_Data_t *data,
     }
 }
 
+/**
+ * @brief Serialize one immutable flight snapshot into the transmit buffer.
+ * @param data Destination buffer and sequence/error counters.
+ * @param now_us Frame timestamp [microseconds].
+ * @param imu Latest IMU data.
+ * @param magnetometer Latest magnetometer data.
+ * @param control Latest controller data.
+ * @param motor_output Latest motor pulse data.
+ * @return true only when exactly TELEMETRY_FRAME_SIZE bytes were written.
+ */
 static bool create_flight_frame(Telemetry_Data_t *data,
                                 uint64_t now_us,
                                 const LSM6DS_Data_t *imu,
@@ -177,17 +230,19 @@ static bool create_flight_frame(Telemetry_Data_t *data,
                                 const FlightControl_Data_t *control,
                                 const MotorOutput_Data_t *motor_output)
 {
-    FrameWriter_t writer;
-    const LSM6DS_Sample_t *sample = &imu->sample;
-    const LIS2MDL_Sample_t *magnetic_sample = &magnetometer->sample;
-    const FlightControl_Output_t *fc = &control->output;
+    FrameWriter_t writer; /* Bounds-checked little-endian frame encoder. */
+    const LSM6DS_Sample_t *sample = &imu->sample; /* Latest six-axis IMU data. */
+    const LIS2MDL_Sample_t *magnetic_sample = &magnetometer->sample; /* Field data. */
+    const FlightControl_Output_t *fc = &control->output; /* Controller snapshot. */
 
+    /* Header: synchronization, schema identity, sequence, and generation time. */
     writer_initialize(&writer, data->tx_buffer, TELEMETRY_TX_BUFFER_SIZE);
     writer_u32(&writer, TELEMETRY_SYNC_WORD);
     writer_u32(&writer, TELEMETRY_SCHEMA_VERSION);
     writer_u32(&writer, data->frame_sequence);
     writer_u64(&writer, now_us);
 
+    /* Payload order is the wire contract documented in TELEMETRY.md. */
     writer_float32(&writer, sample->dt_s);
     writer_float32(&writer, sample->accel_mps2.x);
     writer_float32(&writer, sample->accel_mps2.y);
@@ -223,6 +278,8 @@ static bool create_flight_frame(Telemetry_Data_t *data,
     writer_float32(&writer, fc->attitude.roll_deg);
     writer_float32(&writer, fc->attitude.pitch_deg);
     writer_float32(&writer, fc->setpoint.throttle);
+    writer_float32(&writer, control->config.flight_roll_trim_deg);
+    writer_float32(&writer, control->config.flight_pitch_trim_deg);
     writer_float32(&writer, fc->setpoint.roll_angle_deg);
     writer_float32(&writer, fc->setpoint.pitch_angle_deg);
     writer_float32(&writer, fc->setpoint.roll_rate_deg_s);
@@ -252,6 +309,7 @@ static bool create_flight_frame(Telemetry_Data_t *data,
     writer_float32(&writer, (float32_t)motor_output->pulse_us.rear_right);
     writer_float32(&writer, (float32_t)motor_output->pulse_us.rear_left);
 
+    /* A frame is published only when every expected field fits exactly. */
     if(!writer.valid ||
        (writer.length != (uint16_t)TELEMETRY_FLIGHT_FRAME_SIZE))
     {
@@ -265,6 +323,7 @@ static bool create_flight_frame(Telemetry_Data_t *data,
     return true;
 }
 
+/** Initialize a bounded little-endian writer over a caller-owned byte array. */
 static void writer_initialize(FrameWriter_t *writer,
                               uint8_t *buffer,
                               uint16_t capacity)
@@ -275,6 +334,7 @@ static void writer_initialize(FrameWriter_t *writer,
     writer->valid = true;
 }
 
+/** Append one unsigned 8-bit value, or mark overflow if capacity is exhausted. */
 static void writer_u8(FrameWriter_t *writer, uint8_t value)
 {
     if(!writer->valid)
@@ -289,30 +349,36 @@ static void writer_u8(FrameWriter_t *writer, uint8_t value)
     writer->buffer[writer->length++] = value;
 }
 
+/** Append one unsigned 16-bit value in little-endian byte order. */
 static void writer_u16(FrameWriter_t *writer, uint16_t value)
 {
+    /* The protocol is explicitly little-endian, independent of host tooling. */
     writer_u8(writer, (uint8_t)(value & 0xFFU));
     writer_u8(writer, (uint8_t)((value >> 8) & 0xFFU));
 }
 
+/** Append one unsigned 32-bit value in little-endian byte order. */
 static void writer_u32(FrameWriter_t *writer, uint32_t value)
 {
     writer_u16(writer, (uint16_t)(value & 0xFFFFU));
     writer_u16(writer, (uint16_t)((value >> 16) & 0xFFFFU));
 }
 
+/** Append one unsigned 64-bit value in little-endian byte order. */
 static void writer_u64(FrameWriter_t *writer, uint64_t value)
 {
     writer_u32(writer, (uint32_t)(value & 0xFFFFFFFFULL));
     writer_u32(writer, (uint32_t)((value >> 32) & 0xFFFFFFFFULL));
 }
 
+/** Append one IEEE-754 32-bit float using its little-endian binary representation. */
 static void writer_float32(FrameWriter_t *writer, float32_t value)
 {
+    /* Bit-preserving reinterpretation serializes IEEE-754 single precision. */
     union
     {
-        float32_t floating_point;
-        uint32_t unsigned_integer;
+        float32_t floating_point;   /* Source numerical value. */
+        uint32_t unsigned_integer;  /* Same 32 bits used by integer writer. */
     } conversion;
 
     conversion.floating_point = value;

@@ -32,7 +32,9 @@ The startup level calibration provides the stationary acceleration baseline.
 Current roll and pitch remove the predicted horizontal gravity projection.
 The residual is filtered at 2 Hz, passed through a 0.04 m/s² deadband, and
 integrated with trapezoidal integration. Velocity and displacement use leak
-time constants of 6 s and 4 s and are bounded to ±1.5 m/s and ±0.75 m.
+time constants of 10 s and 8 s and are bounded to ±1.5 m/s and ±0.75 m. The
+longer memory prevents the correction from disappearing before the aircraft
+has had time to brake.
 
 The local axis convention is:
 
@@ -42,11 +44,13 @@ The local axis convention is:
 The angular corrections are:
 
 ```text
-pitch_trim = 1.5 * displacement_x + 2.5 * velocity_x
-roll_trim  = 1.5 * displacement_y + 2.5 * velocity_y
+pitch_trim = 1.0 * displacement_x + 4.0 * velocity_x
+roll_trim  = 1.0 * displacement_y + 4.0 * velocity_y
 ```
 
-Each correction is limited to ±2 degrees. The flight controller adds these
+Each correction is limited to ±3 degrees. The velocity-dominant tuning raises
+damping and braking authority without making accumulated position the dominant
+term. The flight controller adds these
 terms to the normal stick angle commands before the existing angle and rate
 loops. Forward motion therefore requests a positive pitch correction, which
 commands the validated nose-up braking response.

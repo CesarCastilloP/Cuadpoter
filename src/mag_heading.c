@@ -2,6 +2,16 @@
  * @file mag_heading.c
  * @author Alberto Vazquez
  * @brief Validated and tilt-compensated magnetic heading estimation.
+ *
+ * @details Beginner's reading guide:
+ * - Update receives the calibrated magnetic-field vector plus current roll and
+ *   pitch, rejects stale or physically implausible samples, removes tilt, and
+ *   calculates heading with atan2().
+ * - Heading and heading setpoint are stored in degrees for inspection. Internal
+ *   trigonometry uses radians. Angular errors are wrapped to -180 through +180
+ *   degrees so the controller always chooses the shortest turn.
+ * - This module does not drive motors. It only publishes a validated heading
+ *   that flight_control.c may use as the outer yaw-hold measurement.
  * @version 1.0.0
  * @date 2026-09-29
  */
@@ -11,19 +21,23 @@
 
 #include "mag_heading.h"
 
+/* Angular conversion factors used at the estimator's degree-based API. */
 #define DEG_TO_RAD  0.0174532925f
 #define RAD_TO_DEG  57.2957795f
 #define TWO_PI      (2.0f * M_PI)
 
+/* Production defaults: 3 Hz filtering, +/-20% field gate, 5 uT horizontal gate. */
 static const MagHeading_Config_t g_default_config = {
-    3.0f,
-    0.20f,
-    5.0f,
-    100000U
+    3.0f,     /* filter_cutoff_hz */
+    0.20f,    /* field_tolerance_fraction */
+    5.0f,     /* minimum_horizontal_field_ut */
+    100000U   /* stale_timeout_us */
 };
 
+/** Wrap an arbitrary angle [rad] into the shortest interval [-pi,+pi). */
 static float32_t wrap_angle(float32_t angle_rad)
 {
+    /* Map any finite angle to the unique interval [-pi,+pi]. */
     while(angle_rad > M_PI)
     {
         angle_rad -= TWO_PI;
@@ -35,8 +49,10 @@ static float32_t wrap_angle(float32_t angle_rad)
     return angle_rad;
 }
 
+/** Validate field limits, filter cutoff, heading gain, rate limit, and sign. */
 static bool config_is_valid(const MagHeading_Config_t *config)
 {
+    /* Reject NaN, nonphysical values, and stale limits below two 50 Hz periods. */
     return (config != NULL) &&
            isfinite(config->filter_cutoff_hz) &&
            (config->filter_cutoff_hz > 0.0f) &&
@@ -48,8 +64,10 @@ static bool config_is_valid(const MagHeading_Config_t *config)
            (config->stale_timeout_us >= 20000U);
 }
 
+/** Count one rejected sample, clear validity, and return INVALID_FIELD. */
 static MagHeading_Status_t reject_sample(MagHeading_Data_t *data)
 {
+    /* Rejected magnetic data must never remain marked valid for flight control. */
     data->output.fresh = false;
     data->output.valid = false;
     if(data->rejected_sample_count < 0xFFFFFFFFU)
@@ -60,9 +78,16 @@ static MagHeading_Status_t reject_sample(MagHeading_Data_t *data)
     return data->last_status;
 }
 
+/**
+ * @brief Initialize a heading estimator without yet declaring heading valid.
+ * @param data Destination instance for filter state, output, and counters.
+ * @param config Optional field/gain/filter configuration; NULL selects defaults.
+ * @return OK or an argument/configuration error.
+ */
 MagHeading_Status_t MagHeading_Init(MagHeading_Data_t *data,
                                     const MagHeading_Config_t *config)
 {
+    /* Effective configuration, either caller supplied or the production default. */
     const MagHeading_Config_t *selected;
 
     if(data == NULL)
@@ -82,30 +107,39 @@ MagHeading_Status_t MagHeading_Init(MagHeading_Data_t *data,
     return MAG_HEADING_STATUS_OK;
 }
 
+/**
+ * @brief Validate and tilt-compensate one magnetic field sample into heading.
+ * @param data Initialized estimator receiving heading and diagnostics.
+ * @param magnetometer Calibrated body-frame magnetic field [microteslas].
+ * @param roll_deg Current roll [degrees].
+ * @param pitch_deg Current pitch [degrees].
+ * @param now_us Current monotonic time [microseconds] for stale-data detection.
+ * @return OK, NO_NEW_DATA, INVALID_FIELD, STALE, or argument/configuration error.
+ */
 MagHeading_Status_t MagHeading_Update(MagHeading_Data_t *data,
                                       const LIS2MDL_Data_t *magnetometer,
                                       float32_t roll_deg,
                                       float32_t pitch_deg,
                                       uint64_t now_us)
 {
-    const LIS2MDL_Sample_t *sample;
-    float32_t reference_field_ut;
-    float32_t minimum_field_ut;
-    float32_t maximum_field_ut;
-    float32_t roll_rad;
-    float32_t pitch_rad;
-    float32_t sin_roll;
-    float32_t cos_roll;
-    float32_t sin_pitch;
-    float32_t cos_pitch;
-    float32_t horizontal_x;
-    float32_t horizontal_y;
-    float32_t horizontal_norm;
-    float32_t measured_heading_rad;
-    float32_t elapsed_s;
-    float32_t filter_time_s;
-    float32_t alpha;
-    uint64_t age_us;
+    const LIS2MDL_Sample_t *sample; /* Current calibrated magnetometer sample. */
+    float32_t reference_field_ut;   /* Calibrated local field magnitude, in uT. */
+    float32_t minimum_field_ut;     /* Lower accepted magnitude, in uT. */
+    float32_t maximum_field_ut;     /* Upper accepted magnitude, in uT. */
+    float32_t roll_rad;             /* Aircraft roll used for tilt compensation. */
+    float32_t pitch_rad;            /* Aircraft pitch used for tilt compensation. */
+    float32_t sin_roll;             /* Cached sin(roll) term. */
+    float32_t cos_roll;             /* Cached cos(roll) term. */
+    float32_t sin_pitch;            /* Cached sin(pitch) term. */
+    float32_t cos_pitch;            /* Cached cos(pitch) term. */
+    float32_t horizontal_x;         /* Level-frame forward magnetic component, uT. */
+    float32_t horizontal_y;         /* Level-frame right magnetic component, uT. */
+    float32_t horizontal_norm;      /* Magnitude of usable horizontal field, uT. */
+    float32_t measured_heading_rad; /* Unfiltered magnetic heading, radians. */
+    float32_t elapsed_s;            /* Time since previous magnetic sample, seconds. */
+    float32_t filter_time_s;        /* First-order LPF time constant, seconds. */
+    float32_t alpha;                /* Discrete LPF coefficient in [0,1]. */
+    uint64_t age_us;                /* Age of a repeated sample, microseconds. */
 
     if((data == NULL) || (magnetometer == NULL))
     {
@@ -121,6 +155,7 @@ MagHeading_Status_t MagHeading_Update(MagHeading_Data_t *data,
     data->output.fresh = false;
     data->output.field_magnitude_ut = sample->body_field_magnitude_ut;
 
+    /* A repeated sequence is acceptable briefly, but eventually becomes stale. */
     if(sample->sequence == data->previous_sample_sequence)
     {
         age_us = (now_us >= sample->timestamp_us) ?
@@ -151,6 +186,7 @@ MagHeading_Status_t MagHeading_Update(MagHeading_Data_t *data,
         return reject_sample(data);
     }
 
+    /* Reject magnetic interference before allowing it to steer yaw. */
     reference_field_ut = magnetometer->calibration.reference_field_ut;
     minimum_field_ut = reference_field_ut *
         (1.0f - data->config.field_tolerance_fraction);
@@ -186,6 +222,7 @@ MagHeading_Status_t MagHeading_Update(MagHeading_Data_t *data,
         return reject_sample(data);
     }
 
+    /* FRD convention requires -right in atan2 to obtain positive clockwise yaw. */
     measured_heading_rad = atan2f(-horizontal_y, horizontal_x);
     if(!data->heading_initialized)
     {
@@ -194,6 +231,7 @@ MagHeading_Status_t MagHeading_Update(MagHeading_Data_t *data,
     }
     else
     {
+        /* Filter the shortest angular error so wraparound never causes a jump. */
         elapsed_s = (sample->timestamp_us >
                      data->previous_sample_timestamp_us) ?
             (float32_t)(sample->timestamp_us -
@@ -208,6 +246,7 @@ MagHeading_Status_t MagHeading_Update(MagHeading_Data_t *data,
                                 data->estimated_heading_rad)));
     }
 
+    /* Publish both raw and filtered heading for control and telemetry analysis. */
     data->previous_sample_timestamp_us = sample->timestamp_us;
     data->output.timestamp_us = sample->timestamp_us;
     data->output.sequence++;
